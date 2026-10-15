@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#08110c">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ICR2">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<title>ICR2 Modern – Phase 8.5</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#08110c;color:#f6f7f8;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+canvas{display:block;width:100vw;height:100vh}
+.panel{position:fixed;background:rgba(6,10,8,.78);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.14);border-radius:10px;pointer-events:none}
+#hud{left:18px;top:16px;padding:12px 14px;min-width:225px}
+#hud .title{font-size:14px;font-weight:750;letter-spacing:.045em;margin-bottom:6px}
+#hud .speed{font-size:34px;font-weight:800;line-height:1.05;margin:3px 0 5px}
+#hud .speed small{font-size:13px;font-weight:550;opacity:.8}
+.row{display:flex;justify-content:space-between;gap:24px;font-size:13px;line-height:1.72;font-variant-numeric:tabular-nums}
+#help{right:18px;bottom:54px;padding:9px 12px;font-size:12px;line-height:1.65;display:none;max-width:min(720px,calc(100vw - 36px));z-index:18}
+kbd{padding:1px 5px;border-radius:4px;border:1px solid rgba(255,255,255,.28);background:rgba(255,255,255,.08);font-family:inherit}
+#tag{right:18px;top:16px;padding:8px 10px;font-size:11px;line-height:1.45;text-align:right;opacity:.86}
+#gapPanel{right:18px;top:88px;padding:10px 12px;width:245px;font-size:12px;line-height:1.45;z-index:17}
+#gapPanel .gapTitle{font-size:11px;font-weight:800;letter-spacing:.08em;opacity:.72;margin-bottom:5px}
+#gapPanel .gapPos{font-size:18px;font-weight:850;margin-bottom:4px}
+#gapPanel .gapRow{display:grid;grid-template-columns:52px 1fr;gap:8px;align-items:baseline;font-variant-numeric:tabular-nums}
+#gapPanel .gapRow span{opacity:.7}
+#gapPanel .gapRow strong{text-align:right;font-size:11px}
+#standings{right:18px;top:196px;padding:9px 11px;width:245px;font-size:11px;line-height:1.45;display:none}
+#standings strong{display:inline-block;width:26px;text-align:right;margin-right:8px}
+#cockpit{position:fixed;inset:0;pointer-events:none;display:none;overflow:hidden}
+#cockpit .shade{position:absolute;left:0;right:0;bottom:0;height:29vh;background:linear-gradient(transparent,rgba(5,5,6,.88) 32%,#09090a 100%)}
+#cockpitUpper{position:absolute;left:50%;bottom:19vh;width:min(100vw,1280px);height:auto;transform:translateX(-50%);image-rendering:pixelated}
+#cockpitRim{position:absolute;left:50%;bottom:7.5vh;width:min(100vw,1280px);height:auto;transform:translateX(-50%);image-rendering:pixelated;opacity:.94}
+#wheel{position:absolute;left:50%;bottom:1.7vh;width:170px;height:170px;margin-left:-85px;border:17px solid #18191a;border-radius:50%;box-sizing:border-box;transform:rotate(calc(-1 * var(--wheelrot,0deg)));transform-origin:center;box-shadow:0 0 0 5px #373737 inset}
+#wheel:before,#wheel:after{content:"";position:absolute;background:#1b1c1d;left:50%;top:50%;transform-origin:left center}
+#wheel:before{width:74px;height:16px;transform:translate(0,-8px) rotate(0deg)}
+#wheel:after{width:74px;height:16px;transform:translate(0,-8px) rotate(180deg)}
+#dashLive{position:absolute;left:50%;bottom:2.6vh;transform:translateX(-50%);width:250px;height:88px;border-radius:10px;background:#080b09;border:3px solid #353835;color:#d8ffb2;text-align:center;font-variant-numeric:tabular-nums;box-shadow:0 0 24px #000}
+#dashLive .rpm{height:9px;margin:8px 12px 4px;background:#192018;border-radius:4px;overflow:hidden}#dashLive .rpm i{display:block;height:100%;width:0;background:linear-gradient(90deg,#6fd36f,#e8d75c,#ee6258)}
+#dashLive .big{font-size:25px;font-weight:800;line-height:1}.dashrow{display:flex;justify-content:space-around;font-size:11px;margin-top:5px}
+
+#settingsBtn{position:fixed;right:18px;bottom:16px;pointer-events:auto;border:1px solid rgba(255,255,255,.28);background:rgba(6,10,8,.82);color:#fff;border-radius:8px;padding:7px 10px;font:600 12px inherit;cursor:pointer}
+#settingsOverlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.58);z-index:20;pointer-events:auto}
+#settingsPanel{width:min(560px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;background:#111816;border:1px solid rgba(255,255,255,.18);border-radius:14px;padding:18px 20px;box-shadow:0 24px 70px #000}
+#settingsPanel h2{margin:0 0 5px;font-size:20px}#settingsPanel .sub{font-size:12px;opacity:.7;margin-bottom:14px}
+.setting{display:grid;grid-template-columns:155px 1fr 58px;gap:10px;align-items:center;margin:10px 0;font-size:13px}.setting output{text-align:right;font-variant-numeric:tabular-nums}
+.setting input[type=range]{width:100%}.setting select{width:100%;background:#202a27;color:#fff;border:1px solid #53615c;border-radius:6px;padding:6px}
+.setting.check{grid-template-columns:155px 1fr}.setting.check input{justify-self:start;transform:scale(1.15)}
+.settingsActions{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}.settingsActions button{background:#26332f;color:#fff;border:1px solid #53615c;border-radius:7px;padding:8px 11px;cursor:pointer}.settingsActions button.primary{background:#355c4d}
+#startSignal{position:fixed;left:50%;top:31%;transform:translate(-50%,-50%);font-size:84px;font-weight:900;text-shadow:0 4px 20px #000;display:none;pointer-events:none;z-index:12}
+
+#resultsOverlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.68);z-index:30;pointer-events:auto}
+#resultsPanel{width:min(660px,calc(100vw - 32px));max-height:calc(100vh - 40px);overflow:auto;background:#101713;border:1px solid rgba(255,255,255,.2);border-radius:16px;padding:20px 22px;box-shadow:0 26px 80px #000}
+#resultsPanel h2{margin:0 0 4px;font-size:26px}#resultsSummary{font-size:13px;opacity:.8;margin-bottom:14px}
+#resultsTable{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}#resultsTable th,#resultsTable td{padding:7px 8px;border-bottom:1px solid rgba(255,255,255,.1);text-align:left}#resultsTable th:nth-child(1),#resultsTable td:nth-child(1){width:44px;text-align:right}#resultsTable th:last-child,#resultsTable td:last-child{text-align:right}#resultsTable tr.you{background:rgba(110,190,145,.12)}
+.resultsActions{display:flex;gap:9px;justify-content:flex-end;margin-top:16px}.resultsActions button{background:#26332f;color:#fff;border:1px solid #53615c;border-radius:7px;padding:8px 12px;cursor:pointer}.resultsActions button.primary{background:#355c4d}
+#raceBanner{position:fixed;left:50%;top:18%;transform:translateX(-50%);padding:8px 16px;border-radius:8px;background:rgba(10,12,10,.78);font-weight:800;letter-spacing:.12em;display:none;z-index:13;pointer-events:none}
+
+/* Phase 6 reference systems */
+#setupBtn{position:fixed;right:116px;bottom:16px;pointer-events:auto;border:1px solid rgba(255,255,255,.28);background:rgba(6,10,8,.82);color:#fff;border-radius:8px;padding:7px 10px;font:600 12px inherit;cursor:pointer}
+#helpBtn{position:fixed;right:205px;bottom:16px;pointer-events:auto;border:1px solid rgba(255,255,255,.28);background:rgba(6,10,8,.82);color:#fff;border-radius:8px;padding:7px 10px;font:600 12px inherit;cursor:pointer;z-index:19}
+#setupOverlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.58);z-index:21;pointer-events:auto}
+#setupPanel{width:min(600px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;background:#111816;border:1px solid rgba(255,255,255,.18);border-radius:14px;padding:18px 20px;box-shadow:0 24px 70px #000}
+#setupPanel h2{margin:0 0 5px;font-size:20px}#setupPanel .sub{font-size:12px;opacity:.72;margin-bottom:14px}
+#pitPanel{left:18px;bottom:18px;padding:9px 12px;width:245px;font-size:12px;line-height:1.5;display:none;z-index:9}
+#pitBar{height:7px;background:rgba(255,255,255,.12);border-radius:4px;overflow:hidden;margin-top:6px}#pitBar i{display:block;height:100%;width:0;background:#d7d07b}
+@keyframes p75pitflash{from{box-shadow:0 0 0 rgba(255,70,40,0)}to{box-shadow:0 0 24px rgba(255,70,40,.95)}}#pitPanel.speedWarn{border-color:#ff5b3b;background:rgba(65,12,6,.90);animation:p75pitflash .42s infinite alternate}#pitPanel.speedWarn #pitTitle{color:#ffcf77}
+.mirrorFrame{position:fixed;display:none;border:3px solid #151719;border-radius:4px;box-shadow:0 0 0 1px #555 inset,0 3px 10px #000;pointer-events:none;z-index:16;box-sizing:border-box;background:#111;overflow:hidden}.mirrorFrame span{display:none}.mirrorFrame canvas{position:absolute;inset:0;width:100%;height:100%;display:block;image-rendering:auto}
+#replayBadge{position:fixed;left:50%;top:12%;transform:translateX(-50%);display:none;padding:7px 13px;border-radius:8px;background:rgba(0,0,0,.78);border:1px solid rgba(255,255,255,.18);font-weight:800;letter-spacing:.1em;z-index:15;pointer-events:none}
+#ruleNotice{position:fixed;left:50%;top:23%;transform:translateX(-50%);display:none;padding:7px 12px;border-radius:7px;background:rgba(95,18,14,.88);font-size:12px;font-weight:750;z-index:15;pointer-events:none}
+#referenceBadge{position:fixed;left:50%;bottom:10px;transform:translateX(-50%);font-size:10px;opacity:.55;pointer-events:none}
+
+
+/* Phase 6.5 presentation */
+#sectorPanel{right:18px;top:88px;padding:10px 12px;width:265px;font-size:12px;line-height:1.45;z-index:17}
+#sectorPanel .sectorTitle{font-size:11px;font-weight:800;letter-spacing:.08em;opacity:.72;margin-bottom:5px}
+#sectorPanel .sectorPos{font-size:16px;font-weight:850;margin-bottom:4px}
+#sectorPanel .sectorRows{display:grid;gap:4px;margin-top:6px;font-variant-numeric:tabular-nums}
+#sectorPanel .standingRow{display:grid;grid-template-columns:28px 1fr auto;gap:8px;align-items:baseline}
+#sectorPanel .standingRow .pos{opacity:.72;text-align:right}
+#sectorPanel .standingRow .name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#sectorPanel .standingRow .gap{text-align:right;font-size:12px}
+#sectorPanel .standingRow.you{background:rgba(110,190,145,.12);border-radius:6px;padding:2px 4px}
+#sectorPanel .leader{color:#86dd9c}
+#sectorPanel .behind{color:#ffe277}
+
+#resultsOverlay{inset:auto!important;left:50%!important;top:12px!important;/* 7.12: !important needed, the inset shorthand overrode left/top and pushed the panel off-screen */ transform:translateX(-50%);width:min(720px,calc(100vw - 24px));display:none;align-items:flex-start;justify-content:center;background:transparent!important;pointer-events:none}
+#resultsPanel{width:100%;max-height:46vh;overflow:auto;padding:12px 15px;background:rgba(10,18,14,.93);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.55);pointer-events:auto}
+#resultsPanel h2{font-size:20px;margin:0 0 2px}#resultsSummary{margin-bottom:8px}
+#resultsTable{font-size:11px}#resultsTable th,#resultsTable td{padding:4px 6px}.resultsActions{margin-top:8px}
+
+#damageWarning{position:fixed;left:50%;top:17%;transform:translateX(-50%);display:none;padding:8px 13px;border-radius:8px;background:rgba(130,18,12,.92);border:1px solid rgba(255,255,255,.25);font-size:12px;font-weight:850;letter-spacing:.04em;z-index:18;pointer-events:none}
+#damage.critical,#dashdamage.critical{color:#ff766b}
+
+#introOverlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:60;background:linear-gradient(180deg,rgba(8,16,22,.70),rgba(4,8,10,.92));pointer-events:auto}
+#introCard{width:min(900px,calc(100vw - 36px));display:grid;grid-template-columns:1fr minmax(280px,42%);overflow:hidden;border-radius:18px;border:1px solid rgba(255,255,255,.22);background:#101916;box-shadow:0 28px 90px rgba(0,0,0,.72)}
+.introCopy{padding:34px 34px 30px}.introKicker{font-size:12px;letter-spacing:.16em;font-weight:800;opacity:.64}.introCopy h1{font-size:48px;line-height:.96;margin:13px 0 5px;letter-spacing:-.035em}.introSub{font-size:21px;opacity:.76;margin-bottom:24px}
+.introHero{min-height:360px;background:#0b1110}.introHero img{width:100%;height:100%;object-fit:cover;display:block;image-rendering:auto}
+.introButtons{display:flex;gap:10px}.introButtons button{border:1px solid rgba(255,255,255,.28);border-radius:9px;background:#26332f;color:#fff;padding:11px 18px;font:800 14px inherit;cursor:pointer}.introButtons .introPrimary{background:#a62b1e;border-color:#d95f4e}
+#introOptions{display:none;margin-top:18px;padding-top:16px;border-top:1px solid rgba(255,255,255,.12);max-width:420px}
+#introOptions label{display:grid;grid-template-columns:115px 1fr;align-items:center;gap:12px;margin:9px 0;font-size:13px}
+#introOptions select,#introOptions input{width:100%}.introHint{font-size:11px;opacity:.62;margin-top:12px}
+@media(max-width:720px){#introCard{grid-template-columns:1fr}.introHero{display:none}.introCopy h1{font-size:38px}}
+
+.carNo{display:inline-block;min-width:22px;margin-right:6px;padding:0 3px;border-radius:3px;background:rgba(255,255,255,.14);font-size:.86em;font-weight:800;text-align:center}
+#resultsTable .team{margin-left:8px;font-size:10px;opacity:.55}
+/* 8.4: up to 32 rows; the header row and the buttons stay in view while the list scrolls */
+#resultsPanel{max-height:62vh}
+#resultsTable thead th{position:sticky;top:-12px;background:rgb(13,22,17);z-index:1}
+.resultsActions{position:sticky;bottom:-12px;margin-top:0;padding:8px 0 10px;background:rgb(13,22,17)}
+#sectorPanel .gapRow{opacity:.5;text-align:center;letter-spacing:.2em}
+#standings.p84Order{left:50%;right:auto;top:16px;transform:translateX(-50%);width:auto;max-width:min(660px,calc(100vw - 32px));z-index:18}
+#standings .orderGrid{display:grid;grid-auto-flow:column;column-gap:18px;margin:4px 0 5px}
+#standings .orderGrid div{white-space:nowrap}#standings .orderGrid .you{color:#a6e8bf;font-weight:800}
+
+#packScreen{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;background:#08110c;padding:12px;box-sizing:border-box}
+.packCard{width:min(620px,100%);max-height:100%;overflow:auto;background:#101916;border:1px solid rgba(255,255,255,.2);border-radius:16px;padding:18px 22px;box-sizing:border-box;font-size:14px;line-height:1.45}
+.packCard h1{margin:0 0 8px;font-size:28px;letter-spacing:-.02em}
+#packScreen.loading .packBody{display:none}
+#packStatus{margin:6px 0 10px;font-weight:700}#packStatus.err{color:#ff8f80}
+.packBtn{display:inline-block;margin:6px 8px 6px 0;padding:13px 20px;border-radius:10px;background:#a62b1e;color:#fff;font-weight:800;cursor:pointer}
+.packBtn input{display:none}
+#packCancel{padding:12px 16px;border-radius:10px;background:#26332f;color:#fff;border:1px solid #53615c}
+.packCard .small{font-size:12px;opacity:.75}
+.packInfo{margin-top:12px;font-size:12px;opacity:.8}.packInfo button{background:#26332f;color:#fff;border:1px solid #53615c;border-radius:6px;padding:4px 8px}
+</style>
+</head>
+<body>
+<div id="packScreen" class="loading"><div class="packCard">
+ <h1>ICR2 MODERN</h1>
+ <div id="packStatus">Loading…</div>
+ <div class="packBody">
+  <p>This site holds only the game engine. Your converted IndyCar Racing II data stays on your device: load your <b>icr2_data_pack.zip</b> once and it is kept here.</p>
+  <label class="packBtn">Load game data<input id="packFile" type="file" accept=".zip,application/zip,application/x-zip-compressed"></label>
+  <button id="packCancel" type="button" style="display:none">Cancel</button>
+  <p class="small"><b>iPhone / iPad:</b> first tap Share → <i>Add to Home Screen</i>, open the game from its icon, then load the data there (Safari and the Home Screen app keep separate storage). <b>Android:</b> Chrome menu → <i>Install app</i> or <i>Add to Home screen</i>.</p>
+  <p class="small">Copy the pack to this device first (AirDrop, iCloud Drive, Google Drive, USB). It comes with your desktop build (or <code>python tools/build_data_pack.py</code> makes it). Never upload it anywhere public.</p>
+ </div>
+</div></div>
+
+<canvas id="gl" tabindex="0"></canvas>
+<div id="introOverlay">
+ <div id="introCard">
+  <div class="introCopy">
+   <div class="introKicker">ICR2 · PHASE 8.5 · MOBILE</div>
+   <h1>ICR2 MODERN</h1>
+   <div class="introSub" id="introTrackName">Detroit Grand Prix</div>
+   <div class="introButtons">
+    <button id="introStart" class="introPrimary" type="button">START RACE</button>
+    <button id="introOptionsBtn" type="button">OPTIONS</button>
+   </div>
+   <div id="introOptions">
+    <label>Track
+     <select id="introTrack"><option value="detroit">Detroit Grand Prix</option><option value="laguna">Laguna Seca</option><option value="michigan">Michigan International Speedway</option><option value="longbch">Long Beach · preview</option><option value="elkhart">Road America · preview</option><option value="mlwaukee">Milwaukee Mile · preview</option><option value="midohio">Mid-Ohio · preview</option><option value="portland">Portland · preview</option><option value="vancouvr">Vancouver · preview</option><option value="clevland">Cleveland · preview</option><option value="toronto">Toronto · preview</option><option value="austral">Surfers Paradise · preview</option><option value="phoenix">Phoenix · preview</option><option value="nazareth">Nazareth · preview</option><option value="nwenglnd">New England · preview</option></select>
+    </label>
+    <label>Car trim
+     <select id="introTrim"><option value="highspeed">High-Speed race trim</option><option value="classic">Classic handling</option></select>
+    </label>
+    <label>Start
+     <select id="introStartMode"><option value="rolling">Rolling start</option><option value="standing">Standing start</option></select>
+    </label>
+    <label>Field
+     <select id="introField"><option value="stock">Full field (stock)</option><option value="16">16 cars</option><option value="8">8 cars</option></select>
+    </label>
+    <label>Your grid slot
+     <select id="introGrid"><option value="back">Back of the grid</option><option value="middle">Middle</option><option value="front">Pole position</option></select>
+    </label>
+    <label>Laps
+     <select id="introRaceLaps"><option value="3">3 laps</option><option value="5">5 laps</option><option value="10">10 laps</option></select>
+    </label>
+    <label>AI pace <span id="introAIValue">103%</span>
+     <input id="introAIPace" type="range" min="92" max="110" step="1">
+    </label>
+    <div class="introHint">High-Speed (default) is the Phase 4.1 car below 100 mph plus each circuit's stock gearing and low-drag aero above it. Classic is the original 141 mph reference car.<br>In race: <b>K</b> race settings · <b>U</b> setup · <b>H</b> controls</div>
+   </div>
+  </div>
+  <div class="introHero"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="Pixel-art open-wheel race car on the Detroit street circuit"></div>
+ </div>
+</div>
+<div id="hud" class="panel">
+ <div class="title" id="hudTitle">ICR2 MODERN · PHASE 8.5</div>
+ <div class="speed"><span id="speed">0</span> <small>mph</small></div>
+ <div class="row"><span>Lap</span><strong id="lap">1 / 3</strong></div>
+ <div class="row"><span>Race</span><strong id="raceStatus">GREEN</strong></div>
+ <div class="row"><span>Trim</span><strong id="trimLabel">HIGH-SPEED</strong></div>
+ <div class="row"><span>Progress</span><strong id="progress">0.0%</strong></div>
+ <div class="row"><span>Original AI target</span><strong id="target">—</strong></div>
+ <div class="row"><span>Surface</span><strong id="surface">track</strong></div>
+ <div class="row"><span>Camera</span><strong id="camera">CHASE</strong></div>
+ <div class="row"><span>Position</span><strong id="position">1 / 8</strong></div>
+ <div class="row"><span>Lap time</span><strong id="laptime">0:00.000</strong></div>
+ <div class="row"><span>Gear / RPM</span><strong><span id="gear">N</span> · <span id="rpm">0</span></strong></div>
+ <div class="row"><span>Fuel</span><strong id="fuel">—</strong></div>
+ <div class="row"><span>Tires</span><strong id="tires">100%</strong></div>
+ <div class="row"><span>Damage</span><strong id="damage">0%</strong></div>
+ <div class="row"><span>Pit</span><strong id="pitStatus">—</strong></div>
+</div>
+<div id="tag" class="panel">Phase 8.5 · mobile<br>loading original assets…</div>
+<div id="sectorPanel" class="panel">
+ <div class="sectorTitle">FIELD GAPS (LAST SPLIT)</div>
+ <div class="sectorPos" id="sectorPosition">P1 / 8 · LAP 1</div>
+ <div id="sectorRows" class="sectorRows"></div>
+</div>
+<div id="standings" class="panel"></div>
+<div id="cockpit"><div class="shade"></div><img id="cockpitUpper" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="><img id="cockpitRim" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="><div id="wheel"></div><div id="dashLive"><div class="rpm"><i id="rpmbar"></i></div><div class="big"><span id="dashspeed">0</span> MPH&nbsp;&nbsp;<span id="dashgear">N</span></div><div class="dashrow"><span>LAP <b id="dashlap">1</b></span><span>POS <b id="dashpos">1/8</b></span><span><b id="dashrpm">0</b> RPM</span></div><div class="dashrow"><span>FUEL <b id="dashfuel">—</b></span><span>TIRES <b id="dashtires">100</b>%</span><span>DMG <b id="dashdamage">0</b>%</span></div></div></div>
+
+<div id="mirrorLeftFrame" class="mirrorFrame"><canvas id="mirrorLeftView"></canvas><span>LEFT MIRROR</span></div><div id="mirrorRightFrame" class="mirrorFrame"><canvas id="mirrorRightView"></canvas><span>RIGHT MIRROR</span></div>
+<div id="pitPanel" class="panel"><b id="pitTitle">PIT REQUESTED</b><div id="pitText">Enter pit lane and stop in your highlighted stall.</div><div id="pitBar"><i id="pitProgress"></i></div></div>
+<div id="replayBadge">INSTANT REPLAY · V TO RETURN</div><div id="ruleNotice"></div><div id="damageWarning">CRITICAL DAMAGE · PIT FOR REPAIRS</div>
+<div id="startSignal"></div>
+<button id="setupBtn" type="button">U · Setup</button>
+<button id="settingsBtn" type="button">K · Race</button>
+<button id="helpBtn" type="button">H · Controls</button>
+<div id="setupOverlay"><div id="setupPanel"><h2>Race Setup</h2><div class="sub">The player handling is locked to the Detroit reference baseline. These controls change race resources and presentation, not the base steering/grip model.</div>
+<div class="setting"><label for="setFuel">Starting fuel</label><select id="setFuel"><option value="22">22 L · sprint</option><option value="32">32 L · standard</option><option value="45">45 L · long run</option></select><output></output></div>
+<div class="setting check"><label for="setPitLimiter">Automatic pit limiter</label><input id="setPitLimiter" type="checkbox"></div>
+<div class="setting check"><label for="setMirrors">Cockpit mirrors</label><input id="setMirrors" type="checkbox"></div>
+<div class="setting check"><label for="setDrivingLine">Driving line</label><input id="setDrivingLine" type="checkbox"></div>
+<div class="setting"><label for="setPitStrategy">AI pit strategy</label><select id="setPitStrategy"><option value="auto">Automatic on 10-lap races</option><option value="off">Off</option></select><output></output></div>
+<div class="settingsActions"><button id="setupDefaults" type="button">Reference defaults</button><button id="setupClose" class="primary" type="button">Close</button></div></div></div>
+<div id="settingsOverlay">
+ <div id="settingsPanel">
+  <h2>Driving & Race Settings</h2>
+  <div class="sub">Steering and grip are the locked Phase 4.1 model in both trims. High-Speed changes only drag, gearing and the steering lock above Classic's 141 mph top speed. AI pace and straight-line cap are remembered separately for each trim (High-Speed defaults: 100% pace, cap at the 6th-gear top speed).</div>
+  <div class="setting"><label for="setTrim">Performance trim</label><select id="setTrim"><option value="highspeed">High-Speed race trim (default)</option><option value="classic">Classic handling · 4.1 reference</option></select><output></output></div>
+  <div class="setting check"><span></span><span id="trimNote" style="font-size:11px;opacity:.72">Phase 4.1 reference car · 141 mph top speed</span></div>
+  <div class="setting"><label for="setHandling">Steering / grip model</label><select id="setHandling" disabled><option value="classic">Classic 4.1 · locked</option></select><output></output></div>
+  <div class="setting"><label for="setAICap">AI straight-line cap</label><input id="setAICap" type="range" min="135" max="270" step="1"><output id="outAICap"></output></div>
+  <div class="setting"><label for="setAI">AI pace</label><input id="setAI" type="range" min="92" max="110" step="1"><output id="outAI"></output></div>
+  <div class="setting"><label for="setStart">Race start</label><select id="setStart"><option value="rolling">Rolling start</option><option value="standing">Standing start</option></select><output></output></div>
+  <div class="setting"><label for="setField">Field</label><select id="setField"><option value="stock">Full field (stock)</option><option value="16">16 cars</option><option value="8">8 cars</option></select><output></output></div>
+  <div class="setting"><label for="setGrid">Your grid slot</label><select id="setGrid"><option value="back">Back of the grid</option><option value="middle">Middle</option><option value="front">Pole position</option></select><output></output></div>
+  <div class="setting"><label for="setRaceLaps">Race distance</label><select id="setRaceLaps"><option value="3">3 laps</option><option value="5">5 laps</option><option value="10">10 laps</option></select><output></output></div>
+  <div class="setting check"><label for="setCollisionAssist">Collision recovery</label><input id="setCollisionAssist" type="checkbox"></div>
+  <div class="settingsActions"><button id="settingsDefaults" type="button">Reset defaults</button><button id="settingsRestart" class="primary" type="button">Restart race</button><button id="settingsClose" type="button">Close</button></div>
+ </div>
+</div>
+
+<div id="raceBanner"></div>
+<div id="resultsOverlay"><div id="resultsPanel"><h2>Race Results</h2><div id="resultsSummary"></div><table id="resultsTable"><thead><tr><th>Pos</th><th>Driver</th><th>Status</th><th>Time / Gap</th></tr></thead><tbody id="resultsBody"></tbody></table><div class="resultsActions"><button id="resultsClose" type="button">Back to track</button><button id="resultsRestart" class="primary" type="button">Race again</button></div></div></div>
+<div id="help" class="panel"><kbd>W</kbd>/<kbd>↑</kbd> throttle &nbsp; <kbd>S</kbd>/<kbd>↓</kbd> brake &nbsp; <kbd>A</kbd>/<kbd>←</kbd> <kbd>D</kbd>/<kbd>→</kbd> steer<br><kbd>P</kbd> pit request &nbsp; <kbd>V</kbd> replay &nbsp; <kbd>M</kbd> camera &nbsp; <kbd>O</kbd> order &nbsp; <kbd>K</kbd> race settings &nbsp; <kbd>U</kbd> setup &nbsp; <kbd>X</kbd> recover &nbsp; <kbd>Q</kbd> sound &nbsp; <kbd>H</kbd> hide controls<br><span style="opacity:.72">Classic 4.1 steering/grip is locked in both trims. Choose Classic or High-Speed trim on the start screen or with <b>K</b>. Top-right panel shows field gaps at the most recent split.</span></div><div id="referenceBadge">PHASE 8.5 · MOBILE · TOUCH AND TILT</div>
+<script>
+window.ICR2_TRACK_MANIFEST=[
+ {id:'detroit',name:'Detroit Grand Prix',status:'Reference fidelity'},
+ {id:'laguna',name:'Laguna Seca',status:'Generic importer v1'},
+ {id:'michigan',name:'Michigan International Speedway',status:'Generic importer v1'},
+ {id:'longbch',name:'Long Beach',status:'Experimental import'},
+ {id:'elkhart',name:'Road America',status:'Experimental import'},
+ {id:'mlwaukee',name:'Milwaukee Mile',status:'Experimental import'},
+ {id:'midohio',name:'Mid-Ohio',status:'Experimental import (8.1)'},
+ {id:'portland',name:'Portland',status:'Experimental import (8.1)'},
+ {id:'vancouvr',name:'Vancouver',status:'Experimental import (8.1)'},
+ {id:'clevland',name:'Cleveland',status:'Experimental import (8.2)'},
+ {id:'toronto',name:'Toronto',status:'Experimental import (8.2)'},
+ {id:'austral',name:'Surfers Paradise',status:'Experimental import (8.2)'},
+ {id:'phoenix',name:'Phoenix',status:'Experimental import (8.3)'},
+ {id:'nazareth',name:'Nazareth',status:'Experimental import (8.3)'},
+ {id:'nwenglnd',name:'New England',status:'Experimental import (8.3)'}
+];
+</script>
+<script src="fflate.js"></script>
+<script src="boot.js"></script>
+</body>
+</html>
