@@ -2055,10 +2055,12 @@ updateTag();
 // A desktop with a mouse is unchanged, and none of this runs in 7.11 compat
 // mode: the core's steering hook (p85SteerInput) then returns the key value.
 const P85_STORE='icr2_phase85_mobile';
-const P85_DEFAULTS={v:2,controls:'touch',autoAccel:true,brakeAssist:true,lineAssist:'light',tiltRange:12,tiltZero:0,renderScale:'auto',haptics:true};
+const P85_DEFAULTS={v:3,controls:'touch',autoAccel:false,brakeAssist:false,lineAssist:'off',steerFeel:'smooth',difficulty:'normal',tiltRange:12,tiltZero:0,renderScale:'auto',haptics:true};
 let p85Prefs=(()=>{try{const st=JSON.parse(localStorage.getItem(P85_STORE)||'{}');
  // 8.5.2: tilt was too insensitive at 26° for full lock; move players off the old default
  if(!st.v){if(st.tiltRange===26)delete st.tiltRange;st.v=2;}
+ // 8.5.3: "you drive" is the default; players still on the old all-assists default move to it
+ if(st.v<3){if(st.autoAccel!==false&&st.brakeAssist!==false&&(st.lineAssist||'light')==='light'){delete st.autoAccel;delete st.brakeAssist;delete st.lineAssist;}st.v=3;}
  return Object.assign({},P85_DEFAULTS,st);}catch(e){return Object.assign({},P85_DEFAULTS);}})();
 // One-tap assist levels (start screen and pause panel); anything else shows as Custom.
 const P85_ASSIST_SETS={full:{autoAccel:true,brakeAssist:true,lineAssist:'light'},braking:{autoAccel:true,brakeAssist:true,lineAssist:'off'},off:{autoAccel:false,brakeAssist:false,lineAssist:'off'}};
@@ -2083,12 +2085,41 @@ function p85TiltDegrees(beta,gamma,screenAngle){
  return Math.atan2(-right,up)/D;}
 function p85ScreenAngle(){try{if(screen.orientation&&typeof screen.orientation.angle==='number')return screen.orientation.angle;}catch(e){}
  const w=window.orientation;return typeof w==='number'?w:0;}
-// The wheel angle is smoothed lightly as sensor events arrive (p85TiltEvent); full
-// lock at tiltRange (12° by default, 5-30°), after a 0.8° dead zone against sensor noise.
-function p85TiltEvent(beta,gamma){const d=p85TiltDegrees(beta,gamma,p85ScreenAngle());
- if(p85In.tiltDeg==null||!isFinite(p85In.tiltDeg))p85In.tiltDeg=d;else{const e=((d-p85In.tiltDeg+540)%360)-180;p85In.tiltDeg+=.5*e;}}
+// The wheel angle is taken from each sensor event as it is (p85TiltEvent). Chrome on
+// Android sends an event only when the angle changes by 0.1° or more, so a filter that
+// moved part-way per event stalled whenever the phone was held still (8.5.2 bug).
+// Full lock at tiltRange (12° by default, 5-30°), after a 0.8° dead zone.
+function p85TiltEvent(beta,gamma){const d=p85TiltDegrees(beta,gamma,p85ScreenAngle());if(isFinite(d))p85In.tiltDeg=d;}
 function p85TiltSteer(){if(p85In.beta==null||p85In.tiltDeg==null)return 0;const deg=p85In.tiltDeg-(p85Prefs.tiltZero||0);
  const dz=.8,r=Math.max(5,p85Prefs.tiltRange||12),m=Math.max(0,Math.abs(deg)-dz)/(r-dz);return Math.sign(deg)*Math.min(1,m);}
+
+// -- steering response (8.5.3) --------------------------------------------------------------
+// A given wheel angle turns the car harder the faster it goes (lateral acceleration
+// grows with v² faster than the steering lock shrinks), so a linear thumb or tilt feels
+// twitchy at speed. 'smooth' blends towards a cubic curve as speed rises: full input is
+// still full lock, but the middle is gentler (at 100 mph, half input gives 27% lock).
+const P85_FEEL={smooth:.62,direct:0};
+function p85Response(u,v){const e=(P85_FEEL[p85Prefs.steerFeel]??P85_FEEL.smooth)*Math.min(1,v/45);return (1-e)*u+e*u*u*u;}
+
+// -- difficulty (8.5.3) --------------------------------------------------------------------
+// easy/normal: AI pace 92/96% of the trim's default, walls take less speed (a wall
+// contact loses wall x the original share of it), and damage counts only the part of
+// the speed going into the wall: a head-on hit costs what it always did (x dmg), a
+// scrape along the wall almost nothing (the original charged every tick of contact
+// at full speed, so a one-second scrape wrecked the car). hard: the original rules.
+const P85_DIFF={easy:{pace:.92,wall:.35,dmg:.5},normal:{pace:.96,wall:.65,dmg:1},hard:{pace:1,wall:1,dmg:0}};
+function p85Diff(){return P85_DIFF[p85Prefs.difficulty]||P85_DIFF.normal;}
+let p85Vn=0;   // highest into-wall speed this tick (m/s)
+function p85ApplyPace(){if(!p85On())return;const base=p712Trim()==='highspeed'?P712_HS_AI_PACE:DEFAULT_SETTINGS.aiPace;settings.aiPace=Math.round(base*p85Diff().pace);
+ try{if(typeof syncSettingsUI==='function')syncSettingsUI();if(typeof p63SyncIntro==='function')p63SyncIntro();}catch(e){}}
+const p85BaseReflect=reflectVelocity;
+reflectVelocity=function(nx,ny,loss=.42){if(!p85On())return p85BaseReflect(nx,ny,loss);
+ p85Vn=Math.max(p85Vn,-(car.vx*nx+car.vy*ny));const k=p85Diff().wall;return p85BaseReflect(nx,ny,1-(1-loss)*k);};
+const p85BaseImpact=playImpact;
+playImpact=function(strength=.7){if(!p85On())return p85BaseImpact(strength);const d=p85Diff();if(!d.dmg)return p85BaseImpact(strength);
+ const d0=p6Resources.damage;p85BaseImpact(strength);   // sound and the original damage, then replaced:
+ p6Resources.damage=Math.min(100,d0+d.dmg*Math.max(0,strength)*5.5*Math.min(1,Math.max(0,p85Vn)/15));};
+const p85BaseReset=reset;reset=function(){p85ApplyPace();p85BaseReset();};
 
 // -- arcade assists: the racing line and its speeds (as tools/test/autopilot.js) ----
 // The assists follow the stock RACE.LP line pushed to at least 2.6 m from any
@@ -2160,7 +2191,7 @@ function p85SetKey(k,on){if(on&&!p85Keys[k]){keys.add(k);p85Keys[k]=true;}else i
 function p85Tick(dt){
  const v=Math.hypot(car.vx,car.vy),idx=lastIdx%N,screenSteer=p85Prefs.controls==='tilt'?p85TiltSteer():(p85In.pad!=null?p85In.padSteer:0);
  const touching=p85Prefs.controls==='tilt'?p85In.beta!=null:p85In.pad!=null;
- let user=p80SteerSwapped()?-screenSteer:screenSteer;
+ let user=p80SteerSwapped()?-screenSteer:screenSteer;user=p85Response(user,v);
  if(!touching){const kl=keys.has('a')||keys.has('arrowleft'),kr=keys.has('d')||keys.has('arrowright');user=(kr?1:0)-(kl?1:0);}
  let s=raceStarted&&v>4?(P85_LINE[p85Prefs.lineAssist]||0):0;const m=Math.max(1e-3,p85MaxSteer(v));
  // Pit stops: with a stop requested, and on the way out of the pit lane, the
@@ -2233,6 +2264,7 @@ const p85Portrait=(()=>{try{return matchMedia('(orientation: portrait)');}catch(
 fixedUpdate=function(dt){
  if(!p85On())return p85BaseFixedUpdate(dt);
  if(p85Portrait.matches&&!p63IntroOpen)return;              // paused while the phone is upright
+ p85Vn=0;
  if(!settingsOpen&&!p6SetupOpen)p85Tick(dt);
  p85BaseFixedUpdate(dt);
  if(++p85HudTick%6===0)p85UpdateHud();
@@ -2261,9 +2293,11 @@ function p85RequestTilt(){
  const go=()=>{if(P85UI.tiltBound)return;P85UI.tiltBound=true;addEventListener('deviceorientation',e=>{if(e.beta==null||e.gamma==null)return;p85In.beta=e.beta;p85In.gamma=e.gamma;p85TiltEvent(e.beta,e.gamma);p85In.tiltOk=true;});};
  try{const DO=window.DeviceOrientationEvent;if(DO&&typeof DO.requestPermission==='function'){DO.requestPermission().then(r=>{if(r==='granted')go();else{p85Prefs.controls='touch';p85Save();p85SyncSettings();p85Layout();}}).catch(()=>{});}else go();}catch(e){go();}}
 const P85_ASSIST_SELECT='<select id="ID"><option value="full">All on (arcade)</option><option value="braking">Braking help only</option><option value="off">Off: you drive</option><option value="custom" disabled>Custom</option></select>';
+const P85_DIFF_SELECT='<select id="ID"><option value="easy">Easy</option><option value="normal">Normal</option><option value="hard">Hard (original damage)</option></select>';
+function p85SetDifficulty(k){if(!P85_DIFF[k])return;p85Prefs.difficulty=k;p85Save();p85ApplyPace();p85SyncSettings();}
 function p85ApplyAssists(k){const v=P85_ASSIST_SETS[k];if(!v)return;Object.assign(p85Prefs,v);p85Save();p85SyncSettings();p85Layout();}
 function p85SyncSettings(){const set=(id,v)=>{const e=document.getElementById(id);if(e){if(e.type==='checkbox')e.checked=!!v;else e.value=String(v);}};
- set('p85Controls',p85Prefs.controls);set('introControls',p85Prefs.controls);set('p85Assists',p85AssistSet());set('introAssists',p85AssistSet());set('p85Auto',p85Prefs.autoAccel);set('p85BrakeAssist',p85Prefs.brakeAssist);set('p85Line',p85Prefs.lineAssist);
+ set('p85Controls',p85Prefs.controls);set('introControls',p85Prefs.controls);set('p85Assists',p85AssistSet());set('introAssists',p85AssistSet());set('p85Difficulty',p85Prefs.difficulty);set('introDifficulty',p85Prefs.difficulty);set('p85Feel',p85Prefs.steerFeel);set('p85Auto',p85Prefs.autoAccel);set('p85BrakeAssist',p85Prefs.brakeAssist);set('p85Line',p85Prefs.lineAssist);
  set('p85TiltRange',p85Prefs.tiltRange);set('p85Scale',p85Prefs.renderScale);set('p85Haptics',p85Prefs.haptics);
  const o=document.getElementById('p85TiltRangeOut');if(o)o.textContent=p85Prefs.tiltRange+'°';}
 function p85BuildUI(){
@@ -2348,10 +2382,14 @@ body.mobile #pitPanel{left:50%;transform:translateX(-50%);bottom:auto;top:56px}
  if(opts){const lab=document.createElement('label');lab.innerHTML='Controls <select id="introControls"><option value="touch">Touch steering</option><option value="tilt">Tilt steering</option></select>';opts.insertBefore(lab,opts.firstChild);
   lab.querySelector('select').addEventListener('change',e=>{p85Prefs.controls=e.target.value;p85Save();p85SyncSettings();p85Layout();});
   const lab2=document.createElement('label');lab2.innerHTML='Assists '+P85_ASSIST_SELECT.replace('ID','introAssists');opts.insertBefore(lab2,lab.nextSibling||null);
-  lab2.querySelector('select').addEventListener('change',e=>p85ApplyAssists(e.target.value));}
+  lab2.querySelector('select').addEventListener('change',e=>p85ApplyAssists(e.target.value));
+  const lab3=document.createElement('label');lab3.innerHTML='Difficulty '+P85_DIFF_SELECT.replace('ID','introDifficulty');opts.insertBefore(lab3,lab2.nextSibling||null);
+  lab3.querySelector('select').addEventListener('change',e=>p85SetDifficulty(e.target.value));}
  const panel=document.getElementById('settingsPanel'),acts=panel&&panel.querySelector('.settingsActions');
  if(panel&&acts){const box=document.createElement('div');box.innerHTML=`<div class="p85Group">TOUCH CONTROLS</div>
+<div class="setting"><label for="p85Difficulty">Difficulty</label>${P85_DIFF_SELECT.replace('ID','p85Difficulty')}<output></output></div>
 <div class="setting"><label for="p85Assists">Assists</label>${P85_ASSIST_SELECT.replace('ID','p85Assists')}<output></output></div>
+<div class="setting"><label for="p85Feel">Steering response</label><select id="p85Feel"><option value="smooth">Smooth at speed</option><option value="direct">Direct (linear)</option></select><output></output></div>
 <div class="setting"><label for="p85Controls">Steering</label><select id="p85Controls"><option value="touch">Touch: left thumb pad</option><option value="tilt">Tilt the phone</option></select><output></output></div>
 <div class="setting check"><label for="p85Auto">Auto-accelerate</label><input id="p85Auto" type="checkbox"></div>
 <div class="setting check"><label for="p85BrakeAssist">Brake assist</label><input id="p85BrakeAssist" type="checkbox"></div>
@@ -2365,6 +2403,8 @@ body.mobile #pitPanel{left:50%;transform:translateX(-50%);bottom:auto;top:56px}
   const on=(id,ev,fn)=>document.getElementById(id)?.addEventListener(ev,fn);
   on('p85Controls','change',e=>{p85Prefs.controls=e.target.value;p85Save();if(p85Prefs.controls==='tilt')p85RequestTilt();p85SyncSettings();p85Layout();});
   on('p85Assists','change',e=>p85ApplyAssists(e.target.value));
+  on('p85Difficulty','change',e=>p85SetDifficulty(e.target.value));
+  on('p85Feel','change',e=>{p85Prefs.steerFeel=e.target.value;p85Save();});
   on('p85Auto','change',e=>{p85Prefs.autoAccel=e.target.checked;p85Save();p85Layout();p85SyncSettings();});
   on('p85BrakeAssist','change',e=>{p85Prefs.brakeAssist=e.target.checked;p85Save();p85SyncSettings();});
   on('p85Line','change',e=>{p85Prefs.lineAssist=e.target.value;p85Save();p85SyncSettings();});
@@ -2378,6 +2418,7 @@ body.mobile #pitPanel{left:50%;transform:translateX(-50%);bottom:auto;top:56px}
 function p85PedalLook(){if(!P85UI.gas)return;P85UI.gas.classList.toggle('on',p85In.gas>0);P85UI.brake.classList.toggle('on',p85In.brake>0);P85UI.brakeL.classList.toggle('on',p85In.brake>0);}
 if(p85On()){
  try{p85BuildUI();}catch(e){console.warn('8.5 mobile UI:',e);}
+ p85ApplyPace();   // the difficulty's AI pace for this circuit
  // Mirrors cost a second and third scene pass: off by default on a phone. The
  // pit limiter is on, since auto-accelerate would otherwise speed in the pit lane.
  try{if(localStorage.getItem('icr2_phase76_reference')===null){p6Setup.mirrors=false;p6Setup.autoLimiter=true;p6SaveSetup();if(typeof p6SyncSetupUI==='function')p6SyncSetupUI();}}catch(e){}
