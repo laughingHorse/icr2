@@ -2,7 +2,7 @@
 // offline. Network first, so a new upload to GitHub Pages is used as soon as
 // the phone is online; the cache answers when it is not. The game data pack is
 // not handled here (boot.js keeps it in IndexedDB).
-const CACHE = 'icr2-site-c3f73f5bca78';
+const CACHE = 'icr2-site-d67caf3dc58a';
 const CORE = ["./", "index.html", "app3d.js", "perf_trims.js", "boot.js", "fflate.js", "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png"];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(CORE)).then(() => self.skipWaiting()));

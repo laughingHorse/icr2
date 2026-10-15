@@ -2055,8 +2055,14 @@ updateTag();
 // A desktop with a mouse is unchanged, and none of this runs in 7.11 compat
 // mode: the core's steering hook (p85SteerInput) then returns the key value.
 const P85_STORE='icr2_phase85_mobile';
-const P85_DEFAULTS={controls:'touch',autoAccel:true,brakeAssist:true,lineAssist:'light',tiltRange:26,tiltZero:0,renderScale:'auto',haptics:true};
-let p85Prefs=(()=>{try{return Object.assign({},P85_DEFAULTS,JSON.parse(localStorage.getItem(P85_STORE)||'{}'));}catch(e){return Object.assign({},P85_DEFAULTS);}})();
+const P85_DEFAULTS={v:2,controls:'touch',autoAccel:true,brakeAssist:true,lineAssist:'light',tiltRange:12,tiltZero:0,renderScale:'auto',haptics:true};
+let p85Prefs=(()=>{try{const st=JSON.parse(localStorage.getItem(P85_STORE)||'{}');
+ // 8.5.2: tilt was too insensitive at 26° for full lock; move players off the old default
+ if(!st.v){if(st.tiltRange===26)delete st.tiltRange;st.v=2;}
+ return Object.assign({},P85_DEFAULTS,st);}catch(e){return Object.assign({},P85_DEFAULTS);}})();
+// One-tap assist levels (start screen and pause panel); anything else shows as Custom.
+const P85_ASSIST_SETS={full:{autoAccel:true,brakeAssist:true,lineAssist:'light'},braking:{autoAccel:true,brakeAssist:true,lineAssist:'off'},off:{autoAccel:false,brakeAssist:false,lineAssist:'off'}};
+function p85AssistSet(){for(const[k,v]of Object.entries(P85_ASSIST_SETS))if(Object.keys(v).every(q=>p85Prefs[q]===v[q]))return k;return'custom';}
 function p85Save(){try{localStorage.setItem(P85_STORE,JSON.stringify(p85Prefs));}catch(e){}}
 const P85_MOBILE=(()=>{if(p80Compat())return false;let q=null;try{q=new URLSearchParams(location.search).get('mobile');}catch(e){}
  if(q==='1'||window.ICR2_MOBILE===true)return true;if(q==='0'||window.ICR2_MOBILE===false)return false;
@@ -2065,7 +2071,7 @@ function p85On(){return P85_MOBILE&&!p80Compat();}
 const P85_LINE={off:0,light:.3,strong:.8};
 
 // -- input state (screen space: + = right on screen) ---------------------------
-const p85In={pad:null,padX0:0,padSteer:0,gas:0,brake:0,beta:null,gamma:null,tiltOk:false};
+const p85In={pad:null,padX0:0,padSteer:0,gas:0,brake:0,beta:null,gamma:null,tiltDeg:null,tiltOk:false};
 let p85Phys=0,p85Hooked=false,p85LastHit=0,p85Stuck=0;const p85AiPrev=new WeakMap();
 
 // Tilt: the wheel angle is the direction of "up" (from W3C beta/gamma, which iOS
@@ -2077,8 +2083,12 @@ function p85TiltDegrees(beta,gamma,screenAngle){
  return Math.atan2(-right,up)/D;}
 function p85ScreenAngle(){try{if(screen.orientation&&typeof screen.orientation.angle==='number')return screen.orientation.angle;}catch(e){}
  const w=window.orientation;return typeof w==='number'?w:0;}
-function p85TiltSteer(){if(p85In.beta==null)return 0;const deg=p85TiltDegrees(p85In.beta,p85In.gamma,p85ScreenAngle())-(p85Prefs.tiltZero||0);
- const dz=1.5,r=Math.max(8,p85Prefs.tiltRange||26),m=Math.max(0,Math.abs(deg)-dz)/(r-dz);return Math.sign(deg)*Math.min(1,m);}
+// The wheel angle is smoothed lightly as sensor events arrive (p85TiltEvent); full
+// lock at tiltRange (12° by default, 5-30°), after a 0.8° dead zone against sensor noise.
+function p85TiltEvent(beta,gamma){const d=p85TiltDegrees(beta,gamma,p85ScreenAngle());
+ if(p85In.tiltDeg==null||!isFinite(p85In.tiltDeg))p85In.tiltDeg=d;else{const e=((d-p85In.tiltDeg+540)%360)-180;p85In.tiltDeg+=.5*e;}}
+function p85TiltSteer(){if(p85In.beta==null||p85In.tiltDeg==null)return 0;const deg=p85In.tiltDeg-(p85Prefs.tiltZero||0);
+ const dz=.8,r=Math.max(5,p85Prefs.tiltRange||12),m=Math.max(0,Math.abs(deg)-dz)/(r-dz);return Math.sign(deg)*Math.min(1,m);}
 
 // -- arcade assists: the racing line and its speeds (as tools/test/autopilot.js) ----
 // The assists follow the stock RACE.LP line pushed to at least 2.6 m from any
@@ -2248,10 +2258,12 @@ function p85UpdateHud(){const H=P85UI.hud;if(!H)return;const t=id=>{const e=docu
 function p85Fullscreen(){const d=document.documentElement;try{if(!document.fullscreenElement&&d.requestFullscreen&&!matchMedia('(display-mode: standalone)').matches&&!matchMedia('(display-mode: fullscreen)').matches)
   d.requestFullscreen({navigationUI:'hide'}).then(()=>screen.orientation&&screen.orientation.lock&&screen.orientation.lock('landscape').catch(()=>{})).catch(()=>{});}catch(e){}}
 function p85RequestTilt(){
- const go=()=>{if(P85UI.tiltBound)return;P85UI.tiltBound=true;addEventListener('deviceorientation',e=>{if(e.beta==null||e.gamma==null)return;p85In.beta=e.beta;p85In.gamma=e.gamma;p85In.tiltOk=true;});};
+ const go=()=>{if(P85UI.tiltBound)return;P85UI.tiltBound=true;addEventListener('deviceorientation',e=>{if(e.beta==null||e.gamma==null)return;p85In.beta=e.beta;p85In.gamma=e.gamma;p85TiltEvent(e.beta,e.gamma);p85In.tiltOk=true;});};
  try{const DO=window.DeviceOrientationEvent;if(DO&&typeof DO.requestPermission==='function'){DO.requestPermission().then(r=>{if(r==='granted')go();else{p85Prefs.controls='touch';p85Save();p85SyncSettings();p85Layout();}}).catch(()=>{});}else go();}catch(e){go();}}
+const P85_ASSIST_SELECT='<select id="ID"><option value="full">All on (arcade)</option><option value="braking">Braking help only</option><option value="off">Off: you drive</option><option value="custom" disabled>Custom</option></select>';
+function p85ApplyAssists(k){const v=P85_ASSIST_SETS[k];if(!v)return;Object.assign(p85Prefs,v);p85Save();p85SyncSettings();p85Layout();}
 function p85SyncSettings(){const set=(id,v)=>{const e=document.getElementById(id);if(e){if(e.type==='checkbox')e.checked=!!v;else e.value=String(v);}};
- set('p85Controls',p85Prefs.controls);set('introControls',p85Prefs.controls);set('p85Auto',p85Prefs.autoAccel);set('p85BrakeAssist',p85Prefs.brakeAssist);set('p85Line',p85Prefs.lineAssist);
+ set('p85Controls',p85Prefs.controls);set('introControls',p85Prefs.controls);set('p85Assists',p85AssistSet());set('introAssists',p85AssistSet());set('p85Auto',p85Prefs.autoAccel);set('p85BrakeAssist',p85Prefs.brakeAssist);set('p85Line',p85Prefs.lineAssist);
  set('p85TiltRange',p85Prefs.tiltRange);set('p85Scale',p85Prefs.renderScale);set('p85Haptics',p85Prefs.haptics);
  const o=document.getElementById('p85TiltRangeOut');if(o)o.textContent=p85Prefs.tiltRange+'°';}
 function p85BuildUI(){
@@ -2261,18 +2273,18 @@ body.mobile #hud,body.mobile #tag,body.mobile #sectorPanel,body.mobile #gapPanel
 body.mobile canvas,#p85Layer{touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 body.mobile{-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;overscroll-behavior:none}
 #p85Layer{position:fixed;inset:0;z-index:10}
-#p85Pad{position:absolute;left:0;top:22%;bottom:0;width:46%}
+#p85Pad{position:absolute;left:0;top:0;bottom:0;width:46%}
 #p85Layer.tilt #p85Pad{pointer-events:none;left:50%;width:150px;margin-left:-75px;top:auto;bottom:0;height:30px}
-#p85Layer.tilt #p85PadTrack{left:0;bottom:max(8px,env(safe-area-inset-bottom));height:10px;border-radius:5px;opacity:.8}
+#p85Layer.tilt #p85PadTrack{left:0;top:auto;transform:none;bottom:max(8px,env(safe-area-inset-bottom));height:10px;border-radius:5px;opacity:.8}
 #p85Layer.tilt #p85Knob{width:18px;height:18px;margin:-9px 0 0 -9px}
-#p85PadTrack{position:absolute;left:max(22px,env(safe-area-inset-left));bottom:max(22px,env(safe-area-inset-bottom));width:150px;height:56px;border-radius:28px;background:rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.25)}
+#p85PadTrack{position:absolute;left:max(22px,env(safe-area-inset-left));top:50%;transform:translateY(-50%);width:150px;height:56px;border-radius:28px;background:rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.25)}
 #p85Knob{position:absolute;left:50%;top:50%;width:44px;height:44px;margin:-22px 0 0 -22px;border-radius:50%;background:rgba(255,255,255,.55);box-shadow:0 2px 8px rgba(0,0,0,.4)}
-.p85Pedal{position:absolute;bottom:max(18px,env(safe-area-inset-bottom));display:flex;align-items:center;justify-content:center;border-radius:50%;font:800 13px system-ui,sans-serif;letter-spacing:.08em;color:#fff;border:2px solid rgba(255,255,255,.4);text-shadow:0 1px 3px #000}
+.p85Pedal{position:absolute;top:50%;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;border-radius:50%;font:800 13px system-ui,sans-serif;letter-spacing:.08em;color:#fff;border:2px solid rgba(255,255,255,.4);text-shadow:0 1px 3px #000}
 #p85Gas{right:max(18px,env(safe-area-inset-right));width:104px;height:104px;background:rgba(40,150,70,.42)}
 #p85Brake{right:calc(max(18px,env(safe-area-inset-right)) + 116px);width:88px;height:88px;background:rgba(190,40,30,.45)}
 #p85Layer.auto #p85Brake{right:max(18px,env(safe-area-inset-right));width:104px;height:104px}
 #p85BrakeL{left:max(18px,env(safe-area-inset-left));width:104px;height:104px;background:rgba(190,40,30,.45)}
-.p85Pedal.on{filter:brightness(1.7);transform:scale(.96)}
+.p85Pedal.on{filter:brightness(1.7);transform:translateY(-50%) scale(.96)}
 #p85Hud{position:fixed;left:max(10px,env(safe-area-inset-left));top:max(8px,env(safe-area-inset-top));z-index:12;display:flex;gap:12px;align-items:baseline;padding:5px 12px;border-radius:10px;background:rgba(6,10,8,.62);font:700 13px system-ui,sans-serif;font-variant-numeric:tabular-nums;pointer-events:none}
 #p85Hud .spd{font-size:26px;font-weight:850}#p85Hud .u{font-size:11px;opacity:.7;margin-left:2px}#p85Hud .ex{color:#ffb08a}
 #p85Btns{position:fixed;right:max(10px,env(safe-area-inset-right));top:max(8px,env(safe-area-inset-top));z-index:19;display:flex;gap:8px}
@@ -2334,14 +2346,17 @@ body.mobile #pitPanel{left:50%;transform:translateX(-50%);bottom:auto;top:56px}
  // start screen: controls choice; the race settings panel: touch controls block
  const opts=document.getElementById('introOptions');
  if(opts){const lab=document.createElement('label');lab.innerHTML='Controls <select id="introControls"><option value="touch">Touch steering</option><option value="tilt">Tilt steering</option></select>';opts.insertBefore(lab,opts.firstChild);
-  lab.querySelector('select').addEventListener('change',e=>{p85Prefs.controls=e.target.value;p85Save();p85SyncSettings();p85Layout();});}
+  lab.querySelector('select').addEventListener('change',e=>{p85Prefs.controls=e.target.value;p85Save();p85SyncSettings();p85Layout();});
+  const lab2=document.createElement('label');lab2.innerHTML='Assists '+P85_ASSIST_SELECT.replace('ID','introAssists');opts.insertBefore(lab2,lab.nextSibling||null);
+  lab2.querySelector('select').addEventListener('change',e=>p85ApplyAssists(e.target.value));}
  const panel=document.getElementById('settingsPanel'),acts=panel&&panel.querySelector('.settingsActions');
  if(panel&&acts){const box=document.createElement('div');box.innerHTML=`<div class="p85Group">TOUCH CONTROLS</div>
+<div class="setting"><label for="p85Assists">Assists</label>${P85_ASSIST_SELECT.replace('ID','p85Assists')}<output></output></div>
 <div class="setting"><label for="p85Controls">Steering</label><select id="p85Controls"><option value="touch">Touch: left thumb pad</option><option value="tilt">Tilt the phone</option></select><output></output></div>
 <div class="setting check"><label for="p85Auto">Auto-accelerate</label><input id="p85Auto" type="checkbox"></div>
 <div class="setting check"><label for="p85BrakeAssist">Brake assist</label><input id="p85BrakeAssist" type="checkbox"></div>
 <div class="setting"><label for="p85Line">Steering assist</label><select id="p85Line"><option value="off">Off</option><option value="light">Light</option><option value="strong">Strong</option></select><output></output></div>
-<div class="setting"><label for="p85TiltRange">Tilt for full lock</label><input id="p85TiltRange" type="range" min="12" max="45" step="1"><output id="p85TiltRangeOut"></output></div>
+<div class="setting"><label for="p85TiltRange">Tilt for full lock</label><input id="p85TiltRange" type="range" min="5" max="30" step="1"><output id="p85TiltRangeOut"></output></div>
 <div class="setting check"><label for="p85Centre">Tilt centre</label><button id="p85Centre" type="button" style="justify-self:start">Set current angle as straight</button></div>
 <div class="setting"><label for="p85Scale">Resolution</label><select id="p85Scale"><option value="auto">Auto (up to 1.5×)</option><option value="1">1× (fastest)</option><option value="2">2× (sharpest)</option></select><output></output></div>
 <div class="setting check"><label for="p85Haptics">Vibrate on contact</label><input id="p85Haptics" type="checkbox"></div>
@@ -2349,11 +2364,12 @@ body.mobile #pitPanel{left:50%;transform:translateX(-50%);bottom:auto;top:56px}
   panel.insertBefore(box,acts);
   const on=(id,ev,fn)=>document.getElementById(id)?.addEventListener(ev,fn);
   on('p85Controls','change',e=>{p85Prefs.controls=e.target.value;p85Save();if(p85Prefs.controls==='tilt')p85RequestTilt();p85SyncSettings();p85Layout();});
-  on('p85Auto','change',e=>{p85Prefs.autoAccel=e.target.checked;p85Save();p85Layout();});
-  on('p85BrakeAssist','change',e=>{p85Prefs.brakeAssist=e.target.checked;p85Save();});
-  on('p85Line','change',e=>{p85Prefs.lineAssist=e.target.value;p85Save();});
+  on('p85Assists','change',e=>p85ApplyAssists(e.target.value));
+  on('p85Auto','change',e=>{p85Prefs.autoAccel=e.target.checked;p85Save();p85Layout();p85SyncSettings();});
+  on('p85BrakeAssist','change',e=>{p85Prefs.brakeAssist=e.target.checked;p85Save();p85SyncSettings();});
+  on('p85Line','change',e=>{p85Prefs.lineAssist=e.target.value;p85Save();p85SyncSettings();});
   on('p85TiltRange','input',e=>{p85Prefs.tiltRange=Number(e.target.value);p85Save();p85SyncSettings();});
-  on('p85Centre','click',()=>{if(p85In.beta!=null){p85Prefs.tiltZero=Math.round(p85TiltDegrees(p85In.beta,p85In.gamma,p85ScreenAngle()));p85Save();}});
+  on('p85Centre','click',()=>{if(p85In.tiltDeg!=null){p85Prefs.tiltZero=Math.round(p85In.tiltDeg*2)/2;p85Save();}});
   on('p85Scale','change',e=>{p85Prefs.renderScale=e.target.value;p85Save();});
   on('p85Haptics','change',e=>{p85Prefs.haptics=e.target.checked;p85Save();});
   on('p85Setup','click',()=>p6ToggleSetup(true));}
