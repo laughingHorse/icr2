@@ -121,8 +121,10 @@ kbd{padding:1px 5px;border-radius:4px;border:1px solid rgba(255,255,255,.28);bac
 #packScreen{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;background:#08110c;padding:12px;box-sizing:border-box}
 .packCard{width:min(620px,100%);max-height:100%;overflow:auto;background:#101916;border:1px solid rgba(255,255,255,.2);border-radius:16px;padding:18px 22px;box-sizing:border-box;font-size:14px;line-height:1.45}
 .packCard h1{margin:0 0 8px;font-size:28px;letter-spacing:-.02em}
-#packScreen.loading .packBody{display:none}
+#packScreen.loading .packBody{display:none!important}
 #packStatus{margin:6px 0 10px;font-weight:700}#packStatus.err{color:#ff8f80}
+#packUnlock{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}#packPass{flex:1 1 180px;min-width:0;padding:12px 14px;border-radius:10px;border:1px solid #53615c;background:#0b1310;color:#fff;font-size:16px}
+#packUnlock .packBtn{border:0;font-size:15px;margin:0}#packUnlock .packBtn:disabled{opacity:.5}.packCard a{color:#ffb08a}
 .packBtn{display:inline-block;margin:6px 8px 6px 0;padding:13px 20px;border-radius:10px;background:#a62b1e;color:#fff;font-weight:800;cursor:pointer}
 .packBtn input{display:none}
 #packCancel{padding:12px 16px;border-radius:10px;background:#26332f;color:#fff;border:1px solid #53615c}
@@ -134,13 +136,19 @@ kbd{padding:1px 5px;border-radius:4px;border:1px solid rgba(255,255,255,.28);bac
 <div id="packScreen" class="loading"><div class="packCard">
  <h1>ICR2 MODERN</h1>
  <div id="packStatus">Loading…</div>
- <div class="packBody">
+ <div class="packBody" id="packLocked" style="display:none">
+  <p>Enter the passphrase you were given. The game data (15 MB) downloads once and is kept on this device.</p>
+  <form id="packUnlock" autocomplete="off"><input id="packPass" type="password" placeholder="Passphrase" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go"><button id="packGo" type="submit" class="packBtn">Start</button></form>
+  <p class="small"><b>iPhone / iPad:</b> for a full-screen game, first tap Share → <i>Add to Home Screen</i> and open it from the new icon, then enter the passphrase there. <b>Android:</b> Chrome menu → <i>Install app</i> works any time.</p>
+  <p class="small">Have the data pack file instead? <a href="#" id="packShowFile">Load it from a file</a>.</p>
+ </div>
+ <div class="packBody" id="packFileBody">
   <p>This site holds only the game engine. Your converted IndyCar Racing II data stays on your device: load your <b>icr2_data_pack.zip</b> once and it is kept here.</p>
   <label class="packBtn">Load game data<input id="packFile" type="file" accept=".zip,application/zip,application/x-zip-compressed"></label>
-  <button id="packCancel" type="button" style="display:none">Cancel</button>
   <p class="small"><b>iPhone / iPad:</b> first tap Share → <i>Add to Home Screen</i>, open the game from its icon, then load the data there (Safari and the Home Screen app keep separate storage). <b>Android:</b> Chrome menu → <i>Install app</i> or <i>Add to Home screen</i>.</p>
   <p class="small">Copy the pack to this device first (AirDrop, iCloud Drive, Google Drive, USB). It comes with your desktop build (or <code>python tools/build_data_pack.py</code> makes it). Never upload it anywhere public.</p>
  </div>
+ <div><button id="packCancel" type="button" style="display:none">Cancel</button></div>
 </div></div>
 
 <canvas id="gl" tabindex="0"></canvas>
@@ -263,6 +271,7 @@ window.ICR2_TRACK_MANIFEST=[
  {id:'nwenglnd',name:'New England',status:'Experimental import (8.3)'}
 ];
 </script>
+<script>window.ICR2_LOCKED_PACK={"file": "data.icr2", "id": "93ac369d6fe9c1f0", "bytes": 15833790};</script>
 <script src="fflate.js"></script>
 <script src="boot.js"></script>
 </body>

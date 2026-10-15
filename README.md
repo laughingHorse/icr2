@@ -31,3 +31,10 @@ your own devices.
 
 Updating the game: upload the new files over the old ones. The stored data pack
 stays on the phone unless a new build says its format changed.
+
+## Locked game data (data.icr2)
+This copy also holds the game data, encrypted (AES-256-GCM, key from the
+passphrase by PBKDF2-SHA256). Friends open the site and type the passphrase;
+the game downloads and unlocks it by itself and keeps it on their device. A link
+ending in `#key=<passphrase>` fills it in for them. Without the passphrase the
+file is unreadable. Built with `python tools/build_site.py --locked-pack ...`.

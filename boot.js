@@ -6,9 +6,16 @@
 // desktop build) once; it is kept in this browser's IndexedDB on the device.
 // On every start this script reads the files the chosen circuit needs from the
 // stored pack, runs them in the order index.html would, then the engine.
+//
+// 8.5.1: a site built with --locked-pack also carries the pack encrypted
+// (window.ICR2_LOCKED_PACK, data.icr2). Then the first screen asks for the
+// passphrase, downloads the file, unlocks it with WebCrypto and stores the result
+// as if it had been loaded from a file. A link ending in #key=<passphrase> does
+// that without typing; the key is removed from the address straight away.
 (function () {
   'use strict';
   const DB = 'icr2-modern', STORE = 'files', KEY = 'datapack', FORMAT = 1;
+  const LOCKED = window.ICR2_LOCKED_PACK || null;
   const $ = id => document.getElementById(id);
   const status = (msg, err) => { const s = $('packStatus'); if (s) { s.textContent = msg; s.className = err ? 'err' : ''; } };
 
@@ -89,32 +96,92 @@
   }
   async function importFile(file) {
     status('Checking ' + file.name + '…');
-    const zip = await openZip(file);
+    const info = await checkPack(file);
+    await store(file.slice(0, file.size, 'application/zip'), file.name, info, null);
+  }
+  async function checkPack(blob) {
+    const zip = await openZip(blob);
     if (!zip.has('icr2pack.json')) throw new Error('this is not an ICR2 Modern data pack (no icr2pack.json inside)');
     const info = JSON.parse(await zip.text('icr2pack.json'));
     if (info.format !== FORMAT) throw new Error('data pack format ' + info.format + ' (this site reads ' + FORMAT + ')');
     for (const f of ['tracks/stock_setups.js', 'car_data.js', 'field_data.js']) if (!zip.has(f)) throw new Error('the data pack is incomplete: ' + f);
+    return info;
+  }
+  async function store(blob, name, info, hostedId) {
     status('Storing on this device…');
-    const blob = file.slice(0, file.size, 'application/zip');
-    try { await dbPut(KEY, { blob, name: file.name, date: Date.now(), info }); }
-    catch (_) { await dbPut(KEY, { blob: new Blob([await file.arrayBuffer()], { type: 'application/zip' }), name: file.name, date: Date.now(), info }); }
+    const rec = { blob, name, date: Date.now(), info, hostedId };
+    try { await dbPut(KEY, rec); }
+    catch (_) { rec.blob = new Blob([await blob.arrayBuffer()], { type: 'application/zip' }); await dbPut(KEY, rec); }
     try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch (_) {}
     status('Done. Starting…'); location.reload();
   }
+
+  // -- the locked pack on the site (8.5.1) -------------------------------------------------------
+  let lockedBytes = null;   // kept after one download, so a mistyped passphrase does not download again
+  async function download() {
+    if (lockedBytes) return lockedBytes;
+    const res = await fetch(LOCKED.file, { cache: 'no-cache' });
+    if (!res.ok) throw new Error('could not download the game data (' + res.status + ')');
+    const total = LOCKED.bytes || +res.headers.get('content-length') || 0, parts = []; let got = 0;
+    const mb = n => (n / 1048576).toFixed(1);
+    if (res.body && res.body.getReader) {
+      const rd = res.body.getReader();
+      for (;;) { const { done, value } = await rd.read(); if (done) break; parts.push(value); got += value.length; status('Downloading the game data… ' + mb(got) + (total ? ' / ' + mb(total) : '') + ' MB'); }
+    } else parts.push(new Uint8Array(await res.arrayBuffer()));
+    const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0)); let o = 0;
+    for (const p of parts) { out.set(p, o); o += p.length; }
+    return (lockedBytes = out);
+  }
+  async function unlockHosted(pass) {
+    if (!(window.crypto && crypto.subtle)) throw new Error('this page must be opened over https:// to unlock the game data');
+    const buf = await download(), dec = new TextDecoder();
+    if (dec.decode(buf.subarray(0, 8)) !== 'ICR2LOCK' || buf[8] !== 1) throw new Error('the game data file on this site is damaged or from another version');
+    const dv = new DataView(buf.buffer, buf.byteOffset), iterations = dv.getUint32(9), salt = buf.slice(13, 29), iv = buf.slice(29, 41), header = buf.slice(0, 41);
+    status('Unlocking…');
+    const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveKey']);
+    const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    let plain;
+    try { plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: header, tagLength: 128 }, key, buf.subarray(41)); }
+    catch (_) { const e = new Error('That passphrase did not work. Check it and try again.'); e.wrongPass = true; throw e; }
+    const blob = new Blob([plain], { type: 'application/zip' }), info = await checkPack(blob);
+    await store(blob, 'data.icr2', info, LOCKED.id);
+  }
+  function showLocked(on) {
+    const l = $('packLocked'), f = $('packFileBody'); if (!l || !f) return;
+    l.style.display = on ? 'block' : 'none'; f.style.display = on ? 'none' : 'block';
+    if (on) setTimeout(() => { try { $('packPass').focus(); } catch (_) {} }, 50);
+  }
+  async function tryUnlock(pass) {
+    const go = $('packGo'); if (go) go.disabled = true;
+    try { await unlockHosted(pass); }
+    catch (e) { status(e.message || String(e), true); if (go) go.disabled = false; if (e.wrongPass) { const p = $('packPass'); if (p) { p.value = ''; p.focus(); } } }
+  }
   function showPackScreen(msg) {
     $('packScreen').style.display = 'flex'; $('packScreen').classList.remove('loading');
-    status(msg || '', !!msg);
+    status(msg || '', !!msg); showLocked(!!LOCKED);
   }
 
   window.addEventListener('DOMContentLoaded', async () => {
     const secure = location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
     if ('serviceWorker' in navigator && secure) { try { navigator.serviceWorker.register('sw.js').catch(() => {}); } catch (_) {} }
+    // a passphrase in the link (#key=...) is taken out of the address at once
+    let linkKey = null;
+    const m = /(?:^#|&)key=([^&]*)/.exec(location.hash || '');
+    if (m) { try { linkKey = decodeURIComponent(m[1]); } catch (_) { linkKey = m[1]; } try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {} }
     const input = $('packFile');
     input.addEventListener('change', async () => { const f = input.files && input.files[0]; if (!f) return; try { await importFile(f); } catch (e) { status(e.message || String(e), true); } });
     $('packCancel').onclick = () => { $('packScreen').style.display = 'none'; };
+    if ($('packUnlock')) $('packUnlock').addEventListener('submit', e => { e.preventDefault(); const v = $('packPass').value; if (v) tryUnlock(v); });
+    if ($('packShowFile')) $('packShowFile').onclick = e => { e.preventDefault(); showLocked(false); };
     let rec = null;
     try { rec = await dbGet(KEY); } catch (e) { showPackScreen('This browser cannot store the game data (' + (e.message || e) + '). In iOS Safari, private browsing blocks it.'); return; }
-    if (!rec || !rec.blob) { showPackScreen(); return; }
+    const updated = LOCKED && rec && rec.blob && rec.hostedId && rec.hostedId !== LOCKED.id;
+    if (!rec || !rec.blob || updated) {
+      showPackScreen(updated ? 'The game data has been updated. Enter the passphrase to download the new version.' : '');
+      if (updated) { const c = $('packCancel'); c.textContent = 'Play with the old data'; c.style.display = 'inline-block'; c.onclick = async () => { $('packScreen').classList.add('loading'); await start(rec); }; }
+      if (LOCKED && linkKey) tryUnlock(linkKey);
+      return;
+    }
     try { await start(rec); }
     catch (e) { console.error(e); showPackScreen('Could not start from the stored game data: ' + (e.message || e) + '. Load the data pack again.'); }
   });
