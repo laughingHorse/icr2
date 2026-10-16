@@ -12,10 +12,20 @@
 // passphrase, downloads the file, unlocks it with WebCrypto and stores the result
 // as if it had been loaded from a file. A link ending in #key=<passphrase> does
 // that without typing; the key is removed from the address straight away.
+//
+// 8.5.5: updates. build_site.py stamps the site's build id into index.html
+// (window.ICR2_SITE) and version.json. The game's scripts are loaded as
+// app3d.js?v=<build>, so a new index.html can never run old cached code, and
+// whenever the game comes back to the screen (and every 10 minutes) it asks
+// version.json, past every cache, whether a newer build is online; if so a
+// button offers it ("New version … tap to update"). An installed app on
+// Android is often only brought back from memory, never reloaded, so without
+// this a player could keep an old build for days.
 (function () {
   'use strict';
   const DB = 'icr2-modern', STORE = 'files', KEY = 'datapack', FORMAT = 1;
   const LOCKED = window.ICR2_LOCKED_PACK || null;
+  const SITE = (window.ICR2_SITE && window.ICR2_SITE.build) || '', V = SITE ? '?v=' + SITE : '';
   const $ = id => document.getElementById(id);
   const status = (msg, err) => { const s = $('packStatus'); if (s) { s.textContent = msg; s.className = err ? 'err' : ''; } };
 
@@ -79,8 +89,8 @@
     }
     // Circuits missing from the pack are taken out of the track menus.
     for (const sel of ['introTrack', 'setTrack']) { const s = $(sel); if (s) for (const o of [...s.options]) if (!ids.includes(o.value)) o.remove(); }
-    await runScript('perf_trims.js');
-    await runScript('app3d.js');
+    await runScript('perf_trims.js' + V);
+    await runScript('app3d.js' + V);
     $('packScreen').style.display = 'none';
     packInfo(rec, info);
   }
@@ -161,9 +171,41 @@
     status(msg || '', !!msg); showLocked(!!LOCKED);
   }
 
+  // -- updates (8.5.5) ----------------------------------------------------------------------------
+  let updateShown = false, lastCheck = 0;
+  async function checkUpdate() {
+    if (!SITE || updateShown || document.visibilityState === 'hidden') return;
+    const now = Date.now(); if (now - lastCheck < 15000) return; lastCheck = now;
+    try { const reg = navigator.serviceWorker && await navigator.serviceWorker.getRegistration(); if (reg) reg.update().catch(() => {}); } catch (_) {}
+    try {
+      const res = await fetch('version.json?t=' + now, { cache: 'no-store' }); if (!res.ok) return;
+      const v = await res.json(); if (v && v.build && v.build !== SITE) showUpdate(v.label);
+    } catch (_) { /* offline: nothing to do */ }
+  }
+  function showUpdate(label) {
+    if (updateShown) return; updateShown = true;
+    const b = document.createElement('button'); b.type = 'button'; b.id = 'siteUpdate';
+    b.textContent = 'New version' + (label ? ' ' + label : '') + ' is ready · tap to update';
+    b.style.cssText = 'position:fixed;left:50%;top:calc(max(8px,env(safe-area-inset-top)) + 50px);transform:translateX(-50%);z-index:200;max-width:calc(100vw - 24px);'
+      + 'padding:11px 18px;border-radius:12px;border:1px solid rgba(255,255,255,.45);background:#1f7a43;color:#fff;font:800 14px system-ui,sans-serif;box-shadow:0 6px 18px rgba(0,0,0,.55)';
+    b.addEventListener('click', async e => {
+      e.preventDefault(); e.stopPropagation(); b.textContent = 'Updating…'; b.disabled = true;
+      try { await fetch('./', { cache: 'reload' }); await fetch('index.html', { cache: 'reload' }); } catch (_) {}
+      location.reload();
+    });
+    document.body.appendChild(b);
+  }
+
   window.addEventListener('DOMContentLoaded', async () => {
     const secure = location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-    if ('serviceWorker' in navigator && secure) { try { navigator.serviceWorker.register('sw.js').catch(() => {}); } catch (_) {} }
+    if ('serviceWorker' in navigator && secure) { try { navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {}); } catch (_) {} }
+    if (SITE) {
+      setTimeout(checkUpdate, 2500);
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkUpdate(); });
+      window.addEventListener('pageshow', e => { if (e.persisted) checkUpdate(); });
+      window.addEventListener('focus', checkUpdate);
+      setInterval(checkUpdate, 600000);
+    }
     // a passphrase in the link (#key=...) is taken out of the address at once
     let linkKey = null;
     const m = /(?:^#|&)key=([^&]*)/.exec(location.hash || '');

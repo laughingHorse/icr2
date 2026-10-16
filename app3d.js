@@ -2054,8 +2054,9 @@ updateTag();
 // or when the page sets window.ICR2_MOBILE (tests). ?mobile=0 turns it off.
 // A desktop with a mouse is unchanged, and none of this runs in 7.11 compat
 // mode: the core's steering hook (p85SteerInput) then returns the key value.
+const P85_BUILD='8.5.5';   // shown on the start screen and in ❚❚, so a player can tell which build is running
 const P85_STORE='icr2_phase85_mobile';
-const P85_DEFAULTS={v:4,controls:'touch',autoAccel:false,brakeAssist:false,lineAssist:'off',steerFeel:'smooth',difficulty:'normal',tiltRange:10,tiltZero:0,renderScale:'auto',haptics:true};
+const P85_DEFAULTS={v:5,controls:'touch',autoAccel:false,brakeAssist:false,lineAssist:'off',steerFeel:'smooth',difficulty:'normal',tiltRange:20,tiltZero:0,renderScale:'auto',haptics:true};
 let p85Prefs=(()=>{try{const st=JSON.parse(localStorage.getItem(P85_STORE)||'{}');
  // 8.5.2: tilt was too insensitive at 26° for full lock; move players off the old default
  if(!st.v){if(st.tiltRange===26)delete st.tiltRange;st.v=2;}
@@ -2063,6 +2064,8 @@ let p85Prefs=(()=>{try{const st=JSON.parse(localStorage.getItem(P85_STORE)||'{}'
  if(st.v<3){if(st.autoAccel!==false&&st.brakeAssist!==false&&(st.lineAssist||'light')==='light'){delete st.autoAccel;delete st.brakeAssist;delete st.lineAssist;}st.v=3;}
  // 8.5.4: tilt a little more sensitive by default (10 degrees for full lock)
  if(st.v<4){if(st.tiltRange===12)delete st.tiltRange;if(Math.abs(st.tiltZero||0)>6)st.tiltZero=0;st.v=4;}   // a far-off centre was most likely set by accident
+ // 8.5.5: tilt is now the real angle of the phone's edge (see p85TiltDegrees); players on the old default move to the new one
+ if(st.v<5){if(st.tiltRange===10)delete st.tiltRange;if(st.tiltZero)st.tiltZero=0;st.v=5;}   // a centre set with the old measure does not carry over
  return Object.assign({},P85_DEFAULTS,st);}catch(e){return Object.assign({},P85_DEFAULTS);}})();
 // One-tap assist levels (start screen and pause panel); anything else shows as Custom.
 const P85_ASSIST_SETS={full:{autoAccel:true,brakeAssist:true,lineAssist:'light'},braking:{autoAccel:true,brakeAssist:true,lineAssist:'off'},off:{autoAccel:false,brakeAssist:false,lineAssist:'off'}};
@@ -2076,33 +2079,40 @@ const P85_LINE={off:0,light:.3,strong:.8};
 
 // -- input state (screen space: + = right on screen) ---------------------------
 const p85In={pad:null,padX0:0,padSteer:0,gas:0,brake:0,beta:null,gamma:null,tiltDeg:null,tiltOk:false,
- tiltSrc:'',oriSeen:false,motDeg:null,oriN:0,motN:0,oriRate:0,motRate:0,rateT:0,slew:0};
+ tiltSrc:'',oriSeen:false,motDeg:null,motSign:0,oriN:0,motN:0,oriRate:0,motRate:0,rateT:0,slew:0};
 let p85Phys=0,p85Hooked=false,p85LastHit=0,p85Stuck=0;const p85AiPrev=new WeakMap();
 
-// Tilt: the wheel angle is the direction of "up" (from W3C beta/gamma, which iOS
-// and Android report the same way) in the plane of the screen, so it does not
-// depend on how far back the phone is tilted. angle 90 = top of the phone to the left.
+// Tilt (8.5.5): the steering angle is how far the phone's long edge is tilted from
+// level, asin of world "up" along the screen's left-right axis (from W3C beta/gamma,
+// which iOS and Android report the same way). It is the angle you turn the phone like
+// a steering wheel, however far back you hold it. Up to 8.5.4 it was the direction of
+// "up" in the plane of the screen, which for a phone held tilted back grows faster than
+// the real turn (twice as fast at 60° back, without limit as the phone lies flatter):
+// tilt felt touchy and changed with the way the phone was held. angle 90 = top of the
+// phone to the left. Turning clockwise (right edge down) gives a positive angle.
 function p85TiltDegrees(beta,gamma,screenAngle){
  const D=Math.PI/180,b=beta*D,g=gamma*D,ux=-Math.cos(b)*Math.sin(g),uy=Math.sin(b),a=screenAngle*D;
- const right=ux*Math.cos(a)-uy*Math.sin(a),up=ux*Math.sin(a)+uy*Math.cos(a);   // screen axes in device x/y
- return Math.atan2(-right,up)/D;}
+ const right=ux*Math.cos(a)-uy*Math.sin(a);   // world "up" along the screen's right-hand axis
+ return Math.asin(Math.max(-1,Math.min(1,-right)))/D;}
 function p85ScreenAngle(){try{if(screen.orientation&&typeof screen.orientation.angle==='number')return screen.orientation.angle;}catch(e){}
  const w=window.orientation;return typeof w==='number'?w:0;}
-// The wheel angle is taken from each sensor event as it is (p85TiltEvent). Chrome on
-// Android sends an event only when the angle changes by 0.1° or more, so a filter that
-// moved part-way per event stalled whenever the phone was held still (8.5.2 bug).
-// Full lock at tiltRange (12° by default, 5-30°), after a 0.8° dead zone.
+// The angle is taken from each sensor event as it is (p85TiltEvent). Chrome on Android
+// sends an event only when the angle changes by 0.1° or more, so a filter that moved
+// part-way per event stalled whenever the phone was held still (8.5.2 bug).
+// Full lock at tiltRange (20° by default, 4-45°), after a small dead zone.
 function p85TiltEvent(beta,gamma){const d=p85TiltDegrees(beta,gamma,p85ScreenAngle());if(isFinite(d)){p85In.tiltDeg=d;p85In.tiltSrc='orientation';p85In.oriSeen=true;}}
 // 8.5.4 fallback for phones whose browser gives no orientation readings: the gravity
 // vector from devicemotion (accelerationIncludingGravity points up in device axes per
-// the W3C spec; iOS reports it the other way round, and since the top of the screen is
-// higher than its bottom while playing, a downward 'up' is taken as flipped). It is
-// noisier, so p85Tick smooths it over time (~60 ms), not per event.
+// the W3C spec; iOS reports it the other way round). Which way is decided whenever the
+// top of the screen is clearly higher or lower than its bottom, and kept while the
+// phone lies flatter. It is noisier, so p85Tick smooths it over time (~60 ms), not per event.
+const P85_IOS=(()=>{try{return /iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);}catch(e){return false;}})();
 function p85MotionEvent(g){if(p85In.oriSeen||!g||g.x==null||g.y==null||g.z==null)return;const n=Math.hypot(g.x,g.y,g.z);if(!(n>3))return;
- const a=p85ScreenAngle()*Math.PI/180,ux=g.x/n,uy=g.y/n;let r=ux*Math.cos(a)-uy*Math.sin(a),u=ux*Math.sin(a)+uy*Math.cos(a);if(u<0){r=-r;u=-u;}
- p85In.motDeg=Math.atan2(-r,u)*180/Math.PI;if(p85In.tiltSrc!=='motion'){p85In.tiltDeg=p85In.motDeg;p85In.tiltSrc='motion';}}
+ const a=p85ScreenAngle()*Math.PI/180,ux=g.x/n,uy=g.y/n,r=ux*Math.cos(a)-uy*Math.sin(a),u=ux*Math.sin(a)+uy*Math.cos(a);
+ if(Math.abs(u)>.3)p85In.motSign=u<0?-1:1;else if(!p85In.motSign)p85In.motSign=P85_IOS?-1:1;
+ p85In.motDeg=Math.asin(Math.max(-1,Math.min(1,-r*p85In.motSign)))*180/Math.PI;if(p85In.tiltSrc!=='motion'){p85In.tiltDeg=p85In.motDeg;p85In.tiltSrc='motion';}}
 function p85TiltSteer(){if(p85In.tiltDeg==null)return 0;const deg=p85In.tiltDeg-(p85Prefs.tiltZero||0);
- const dz=.8,r=Math.max(4,p85Prefs.tiltRange||10),m=Math.max(0,Math.abs(deg)-dz)/(r-dz);return Math.sign(deg)*Math.min(1,m);}
+ const r=Math.max(4,p85Prefs.tiltRange||20),dz=Math.max(.8,.05*r),m=Math.max(0,Math.abs(deg)-dz)/(r-dz);return Math.sign(deg)*Math.min(1,m);}
 
 // -- steering response (8.5.3) --------------------------------------------------------------
 // A given wheel angle turns the car harder the faster it goes (lateral acceleration
@@ -2303,10 +2313,13 @@ function p85UpdateHud(){const H=P85UI.hud;if(!H)return;const t=id=>{const e=docu
  const dmg=parseFloat(t('damage'))||0,fuel=parseFloat(t('fuel'));H.extra.textContent=(dmg>=5?'DMG '+Math.round(dmg)+'%  ':'')+(fuel<8?'FUEL '+fuel.toFixed(1)+' L':'');
  if(P85UI.knob){const s=p85Prefs.controls==='tilt'?p85TiltSteer():p85In.padSteer;P85UI.knob.style.transform='translateX('+(s*46).toFixed(1)+'px)';}
  if(P85UI.tiltNote)P85UI.tiltNote.style.display=(p85Prefs.controls==='tilt'&&p85In.tiltDeg==null)?'block':'none';
- const now=performance.now();if(now-p85In.rateT>=1000){const k=1000/Math.max(1,now-p85In.rateT);p85In.oriRate=Math.round(p85In.oriN*k);p85In.motRate=Math.round(p85In.motN*k);p85In.oriN=p85In.motN=0;p85In.rateT=now;
-  const el=document.getElementById('p85TiltInfo');if(el){const bound=!!P85UI.tiltBound;
-   el.textContent=!bound?'not listening (choose Tilt and start a race)':p85In.tiltDeg==null?`no readings from the motion sensor (orientation ${p85In.oriRate}/s, motion ${p85In.motRate}/s). In Chrome: ⋮ → Settings → Site settings → Motion sensors → Allowed`
-    :`${p85In.tiltSrc} · wheel ${p85In.tiltDeg>=0?'+':''}${p85In.tiltDeg.toFixed(1)}° (straight at ${(p85Prefs.tiltZero||0)}°) → steering ${Math.round(p85TiltSteer()*100)}% · screen ${p85ScreenAngle()}° · orientation ${p85In.oriRate}/s, motion ${p85In.motRate}/s`;}}}
+ const now=performance.now();if(now-p85In.rateT>=1000){const k=1000/Math.max(1,now-p85In.rateT);p85In.oriRate=Math.round(p85In.oriN*k);p85In.motRate=Math.round(p85In.motN*k);p85In.oriN=p85In.motN=0;p85In.rateT=now;}
+ const txt=p85TiltText();for(const id of ['p85TiltInfo','introTiltInfo']){const el=document.getElementById(id);if(el&&el.textContent!==txt)el.textContent=txt;}
+ const it=document.getElementById('introTiltInfo');if(it)it.style.display=p85Prefs.controls==='tilt'?'block':'none';}
+function p85TiltText(){
+ if(!P85UI.tiltBound)return 'not listening yet (choose Tilt, then START RACE)';
+ if(p85In.tiltDeg==null)return `no readings from the motion sensor (orientation ${p85In.oriRate}/s, motion ${p85In.motRate}/s). In Chrome: ⋮ → Settings → Site settings → Motion sensors → Allowed`;
+ return `${p85In.tiltSrc} · tilt ${p85In.tiltDeg>=0?'+':''}${p85In.tiltDeg.toFixed(1)}° (straight at ${(p85Prefs.tiltZero||0)}°) → steering ${Math.round(p85TiltSteer()*100)}% · screen ${p85ScreenAngle()}° · orientation ${p85In.oriRate}/s, motion ${p85In.motRate}/s`;}
 function p85Fullscreen(){const d=document.documentElement;try{if(!document.fullscreenElement&&d.requestFullscreen&&!matchMedia('(display-mode: standalone)').matches&&!matchMedia('(display-mode: fullscreen)').matches)
   d.requestFullscreen({navigationUI:'hide'}).then(()=>screen.orientation&&screen.orientation.lock&&screen.orientation.lock('landscape').catch(()=>{})).catch(()=>{});}catch(e){}}
 function p85RequestTilt(){
@@ -2403,13 +2416,14 @@ body.mobile #pitPanel{left:50%;transform:translateX(-50%);bottom:auto;top:56px}
  // start screen: controls choice; the race settings panel: touch controls block
  const opts=document.getElementById('introOptions');
  if(opts){const lab=document.createElement('label');lab.innerHTML='Controls <select id="introControls"><option value="touch">Touch steering</option><option value="tilt">Tilt steering</option></select>';opts.insertBefore(lab,opts.firstChild);
+  const ti=document.createElement('div');ti.id='introTiltInfo';ti.style.cssText='display:none;font-size:12px;opacity:.85;line-height:1.35;margin:-3px 0 8px';opts.insertBefore(ti,lab.nextSibling);
   lab.querySelector('select').addEventListener('change',e=>{p85Prefs.controls=e.target.value;p85Save();if(p85Prefs.controls==='tilt')p85RequestTilt();p85SyncSettings();p85Layout();});
-  const lab2=document.createElement('label');lab2.innerHTML='Assists '+P85_ASSIST_SELECT.replace('ID','introAssists');opts.insertBefore(lab2,lab.nextSibling||null);
+  const lab2=document.createElement('label');lab2.innerHTML='Assists '+P85_ASSIST_SELECT.replace('ID','introAssists');opts.insertBefore(lab2,ti.nextSibling||null);
   lab2.querySelector('select').addEventListener('change',e=>p85ApplyAssists(e.target.value));
   const lab3=document.createElement('label');lab3.innerHTML='Difficulty '+P85_DIFF_SELECT.replace('ID','introDifficulty');opts.insertBefore(lab3,lab2.nextSibling||null);
   lab3.querySelector('select').addEventListener('change',e=>p85SetDifficulty(e.target.value));}
  const panel=document.getElementById('settingsPanel'),acts=panel&&panel.querySelector('.settingsActions');
- if(panel&&acts){const box=document.createElement('div');box.innerHTML=`<div class="p85Group">TOUCH CONTROLS · build 8.5.4</div>
+ if(panel&&acts){const box=document.createElement('div');box.innerHTML=`<div class="p85Group">TOUCH CONTROLS · build ${P85_BUILD}</div>
 <div class="setting"><label for="p85Difficulty">Difficulty</label>${P85_DIFF_SELECT.replace('ID','p85Difficulty')}<output></output></div>
 <div class="setting"><label for="p85Assists">Assists</label>${P85_ASSIST_SELECT.replace('ID','p85Assists')}<output></output></div>
 <div class="setting"><label for="p85Feel">Steering response</label><select id="p85Feel"><option value="gentle">Gentle</option><option value="smooth">Smooth</option><option value="direct">Direct (linear)</option></select><output></output></div>
@@ -2417,8 +2431,8 @@ body.mobile #pitPanel{left:50%;transform:translateX(-50%);bottom:auto;top:56px}
 <div class="setting check"><label for="p85Auto">Auto-accelerate</label><input id="p85Auto" type="checkbox"></div>
 <div class="setting check"><label for="p85BrakeAssist">Brake assist</label><input id="p85BrakeAssist" type="checkbox"></div>
 <div class="setting"><label for="p85Line">Steering assist</label><select id="p85Line"><option value="off">Off</option><option value="light">Light</option><option value="strong">Strong</option></select><output></output></div>
-<div class="setting"><label for="p85TiltRange">Tilt for full lock</label><input id="p85TiltRange" type="range" min="4" max="30" step="1"><output id="p85TiltRangeOut"></output></div>
-<div class="setting check"><span>Tilt sensor</span><span id="p85TiltInfo" style="font-size:12px;opacity:.85;line-height:1.35">not listening (choose Tilt and start a race)</span></div>
+<div class="setting"><label for="p85TiltRange">Tilt for full lock</label><input id="p85TiltRange" type="range" min="4" max="45" step="1"><output id="p85TiltRangeOut"></output></div>
+<div class="setting check"><span>Tilt sensor</span><span id="p85TiltInfo" style="font-size:12px;opacity:.85;line-height:1.35">not listening yet (choose Tilt, then START RACE)</span></div>
 <div class="setting check"><label for="p85Centre">Tilt centre</label><button id="p85Centre" type="button" style="justify-self:start">Set current angle as straight</button></div>
 <div class="setting"><label for="p85Scale">Resolution</label><select id="p85Scale"><option value="auto">Auto (up to 1.5×)</option><option value="1">1× (fastest)</option><option value="2">2× (sharpest)</option></select><output></output></div>
 <div class="setting check"><label for="p85Haptics">Vibrate on contact</label><input id="p85Haptics" type="checkbox"></div>
@@ -2448,8 +2462,9 @@ if(p85On()){
  try{if(localStorage.getItem('icr2_phase76_reference')===null){p6Setup.mirrors=false;p6Setup.autoLimiter=true;p6SaveSetup();if(typeof p6SyncSetupUI==='function')p6SyncSetupUI();}}catch(e){}
  if(p85Prefs.controls==='tilt'&&!(window.DeviceOrientationEvent&&typeof DeviceOrientationEvent.requestPermission==='function'))p85RequestTilt();
 }
-if(p7HudTitle)p7HudTitle.textContent='ICR2 MODERN · PHASE 8.5';
-updateTag=function(){ui.tag.innerHTML=`Phase 8.5 · ${T.short_name||T.name} · ${p712IsHS()?'High-Speed race trim':'Classic handling'}<br>${environmentOn?'environment ON':'environment OFF'} · ${atlasReady?(p81AtlasMip?'textures ready (mipmapped)':'textures ready'):'loading textures…'} · ${opponents.length+1} cars · ${soundOn?'sound ON':'sound OFF'}`;};
+if(p7HudTitle)p7HudTitle.textContent='ICR2 MODERN · BUILD '+P85_BUILD;
+try{const k=document.querySelector('.introKicker');if(k)k.textContent='ICR2 · BUILD '+P85_BUILD+(p85On()?' · MOBILE':'');}catch(e){}
+updateTag=function(){ui.tag.innerHTML=`Build ${P85_BUILD} · ${T.short_name||T.name} · ${p712IsHS()?'High-Speed race trim':'Classic handling'}<br>${environmentOn?'environment ON':'environment OFF'} · ${atlasReady?(p81AtlasMip?'textures ready (mipmapped)':'textures ready'):'loading textures…'} · ${opponents.length+1} cars · ${soundOn?'sound ON':'sound OFF'}`;};
 updateTag();
 // -----------------------------------------------------------------------------
 let last=performance.now(),acc=0;const FIXED=1/120;function frame(now){let dt=Math.min(.10,(now-last)/1000);last=now;acc+=dt;let n=0;while(acc>=FIXED&&n<12){fixedUpdate(FIXED);acc-=FIXED;n++;}render();requestAnimationFrame(frame);}requestAnimationFrame(frame);
