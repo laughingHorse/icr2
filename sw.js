@@ -5,7 +5,7 @@
 // 8.5.5: every request asks the server whether the file changed (cache 'no-cache',
 // a quick "304 not modified" when it has not), instead of trusting the browser's
 // copy for GitHub Pages' 10 minutes; version.json is never answered from here.
-const CACHE = 'icr2-site-dc9e871b2404';
+const CACHE = 'icr2-site-22f6b5ccfb72';
 const CORE = ["./", "index.html", "app3d.js", "perf_trims.js", "boot.js", "fflate.js", "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png"];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(CORE.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));

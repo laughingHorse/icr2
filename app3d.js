@@ -2054,7 +2054,7 @@ updateTag();
 // or when the page sets window.ICR2_MOBILE (tests). ?mobile=0 turns it off.
 // A desktop with a mouse is unchanged, and none of this runs in 7.11 compat
 // mode: the core's steering hook (p85SteerInput) then returns the key value.
-const P85_BUILD='8.5.5';   // shown on the start screen and in ❚❚, so a player can tell which build is running
+const P85_BUILD='8.5.6';   // shown on the start screen and in ❚❚, so a player can tell which build is running
 const P85_STORE='icr2_phase85_mobile';
 const P85_DEFAULTS={v:5,controls:'touch',autoAccel:false,brakeAssist:false,lineAssist:'off',steerFeel:'smooth',difficulty:'normal',tiltRange:20,tiltZero:0,renderScale:'auto',haptics:true};
 let p85Prefs=(()=>{try{const st=JSON.parse(localStorage.getItem(P85_STORE)||'{}');
@@ -2123,6 +2123,18 @@ function p85TiltSteer(){if(p85In.tiltDeg==null)return 0;const deg=p85In.tiltDeg-
 // 37% of the lock at a standstill, 33% at 40 mph, 27% at 100 mph.
 const P85_FEEL={gentle:[.55,.25],smooth:[.35,.27],direct:[0,0]};
 function p85Response(u,v){const f=P85_FEEL[p85Prefs.steerFeel]||P85_FEEL.smooth,e=f[0]+f[1]*Math.min(1,v/45);return (1-e)*u+e*u*u*u;}
+// Tilt (8.5.6) has its own response. Measured on all 15 circuits (the test driver's
+// wanted wheel angle, tools/test/tilt_balance.js), the 8.5.5 curve put the corners on
+// its steep end: big corners took 16-20° of a 20° range, and there a degree of tilt
+// changed the car's turn rate by 4.3-6.4°/s, most in slow corners. Tilt is now linear
+// (a slight softening around straight ahead: c, by steering response) and the same
+// share of the lock at every speed up to 50 m/s (112 mph); above, full tilt gives less
+// of it (65% at 95 m/s, 212 mph), where corners use at most a third of the lock and a
+// degree of tilt would otherwise move the car most. Median corners now take 2-4° less
+// tilt, and a degree changes the turn rate by 1.9-4.3°/s at every speed.
+const P85_TILT_FEEL={gentle:.35,smooth:.12,direct:0};
+function p85TiltGain(v){return v<=50?1:Math.max(.65,1-.35*(v-50)/45);}
+function p85TiltResponse(u,v){const c=P85_TILT_FEEL[p85Prefs.steerFeel]??.12;return((1-c)*u+c*u*u*u)*p85TiltGain(v);}
 const P85_SLEW=5;   // a thumb or tilt moves the wheels at most 5 x full lock per second (centre to lock in 0.2 s)
 
 // -- difficulty (8.5.3) --------------------------------------------------------------------
@@ -2216,7 +2228,7 @@ function p85Tick(dt){
  if(p85In.tiltSrc==='motion'&&p85In.motDeg!=null)p85In.tiltDeg+=(p85In.motDeg-p85In.tiltDeg)*(1-Math.exp(-dt/.06));
  const v=Math.hypot(car.vx,car.vy),idx=lastIdx%N,screenSteer=p85Prefs.controls==='tilt'?p85TiltSteer():(p85In.pad!=null?p85In.padSteer:0);
  const touching=p85Prefs.controls==='tilt'?p85In.tiltDeg!=null:p85In.pad!=null;
- let user=p80SteerSwapped()?-screenSteer:screenSteer;user=p85Response(user,v);
+ let user=p80SteerSwapped()?-screenSteer:screenSteer;user=p85Prefs.controls==='tilt'?p85TiltResponse(user,v):p85Response(user,v);
  if(touching){const st=P85_SLEW*dt;p85In.slew+=Math.max(-st,Math.min(st,user-p85In.slew));user=p85In.slew;}else p85In.slew=0;
  if(!touching){const kl=keys.has('a')||keys.has('arrowleft'),kr=keys.has('d')||keys.has('arrowright');user=(kr?1:0)-(kl?1:0);}
  let s=raceStarted&&v>4?(P85_LINE[p85Prefs.lineAssist]||0):0;const m=Math.max(1e-3,p85MaxSteer(v));
@@ -2306,7 +2318,13 @@ function p85El(tag,attrs,parent,html){const e=document.createElement(tag);for(co
 const P85UI={};
 function p85Layout(){if(!P85UI.layer)return;const tilt=p85Prefs.controls==='tilt',auto=!!p85Prefs.autoAccel;
  P85UI.layer.className='p85'+(tilt?' tilt':' touch')+(auto?' auto':'');
- P85UI.gas.style.display=auto?'none':'flex';P85UI.brakeL.style.display=tilt?'flex':'none';P85UI.pad.style.display='block';}
+ const left=tilt&&!auto;   // 8.5.6: one BRAKE only. Tilt with pedals: BRAKE under the left thumb, GAS under the right
+ P85UI.gas.style.display=auto?'none':'flex';P85UI.brake.style.display=left?'none':'flex';P85UI.brakeL.style.display=left?'flex':'none';P85UI.pad.style.display='block';}
+// A press near a pedal (not only on it) works it: the nearest visible pedal within its
+// radius + 56 px. In touch mode the left 46% of the screen is the steering pad.
+function p85PedalAt(x,y){let best=null,bd=1e9;for(const [el,w] of [[P85UI.gas,'gas'],[P85UI.brake,'brake'],[P85UI.brakeL,'brake']]){
+  if(!el||el.style.display==='none')continue;const r=el.getBoundingClientRect(),d=Math.hypot(x-(r.left+r.right)/2,y-(r.top+r.bottom)/2);
+  if(d<r.width/2+56&&d<bd){bd=d;best=w;}}return best;}
 function p85UpdateHud(){const H=P85UI.hud;if(!H)return;const t=id=>{const e=document.getElementById(id);return e?e.textContent:'';};
  H.speed.textContent=t('speed');H.gear.textContent=t('gear');H.pos.textContent='P'+t('position').replace(/\s/g,'');
  H.lap.textContent='LAP '+t('lap').replace(/\s/g,'');H.time.textContent=t('laptime');
@@ -2393,8 +2411,7 @@ body.mobile #pitPanel{left:50%;transform:translateX(-50%);bottom:auto;top:56px}
  L.addEventListener('pointerdown',e=>{e.preventDefault();ensureAudio();const t=e.target.closest?e.target.closest('#p85Gas,#p85Brake,#p85BrakeL,#p85Pad'):null;
   let w=null;if(t){w=t.id==='p85Gas'?'gas':t.id==='p85Pad'?'pad':'brake';}
   else if(p85Prefs.controls!=='tilt'&&e.clientX<innerWidth*.46)w='pad';
-  else if(e.clientX>=innerWidth*.5)w=p85Prefs.autoAccel?'brake':(e.clientY>innerHeight*.45?(e.clientX>innerWidth-150?'gas':'brake'):null);
-  else if(p85Prefs.controls==='tilt')w='brake';
+  else w=p85PedalAt(e.clientX,e.clientY);
   if(!w)return;try{L.setPointerCapture(e.pointerId);}catch(_){}owner.set(e.pointerId,w);
   if(w==='pad'){p85In.pad=e.pointerId;p85In.padX0=e.clientX;p85In.padSteer=0;}else{p85In[w]++;p85PedalLook();}},{passive:false});
  L.addEventListener('pointermove',e=>{if(owner.get(e.pointerId)!=='pad')return;e.preventDefault();const dx=e.clientX-p85In.padX0,dz=4,R=90;
@@ -2431,7 +2448,7 @@ body.mobile #pitPanel{left:50%;transform:translateX(-50%);bottom:auto;top:56px}
 <div class="setting check"><label for="p85Auto">Auto-accelerate</label><input id="p85Auto" type="checkbox"></div>
 <div class="setting check"><label for="p85BrakeAssist">Brake assist</label><input id="p85BrakeAssist" type="checkbox"></div>
 <div class="setting"><label for="p85Line">Steering assist</label><select id="p85Line"><option value="off">Off</option><option value="light">Light</option><option value="strong">Strong</option></select><output></output></div>
-<div class="setting"><label for="p85TiltRange">Tilt for full lock</label><input id="p85TiltRange" type="range" min="4" max="45" step="1"><output id="p85TiltRangeOut"></output></div>
+<div class="setting"><label for="p85TiltRange">Tilt for full steering</label><input id="p85TiltRange" type="range" min="4" max="45" step="1"><output id="p85TiltRangeOut"></output></div>
 <div class="setting check"><span>Tilt sensor</span><span id="p85TiltInfo" style="font-size:12px;opacity:.85;line-height:1.35">not listening yet (choose Tilt, then START RACE)</span></div>
 <div class="setting check"><label for="p85Centre">Tilt centre</label><button id="p85Centre" type="button" style="justify-self:start">Set current angle as straight</button></div>
 <div class="setting"><label for="p85Scale">Resolution</label><select id="p85Scale"><option value="auto">Auto (up to 1.5×)</option><option value="1">1× (fastest)</option><option value="2">2× (sharpest)</option></select><output></output></div>
@@ -2450,9 +2467,22 @@ body.mobile #pitPanel{left:50%;transform:translateX(-50%);bottom:auto;top:56px}
   on('p85Centre','click',()=>{if(p85In.tiltDeg!=null){p85Prefs.tiltZero=Math.round(p85In.tiltDeg*2)/2;p85Save();}});
   on('p85Scale','change',e=>{p85Prefs.renderScale=e.target.value;p85Save();});
   on('p85Haptics','change',e=>{p85Prefs.haptics=e.target.checked;p85Save();});
-  on('p85Setup','click',()=>p6ToggleSetup(true));}
+  on('p85Setup','click',()=>p6ToggleSetup(true));
+  const ex=document.createElement('button');ex.type='button';ex.id='p85Exit';ex.textContent='Exit to menu';acts.insertBefore(ex,acts.firstChild);ex.addEventListener('click',p85ExitToMenu);}
+ const q=sel=>{try{return document.querySelector(sel);}catch(e){return null;}};   // (the headless test DOM has no querySelector)
+ const ra=q('.resultsActions');if(ra){const b=document.createElement('button');b.type='button';b.id='p85ResultsMenu';b.textContent='Menu';ra.insertBefore(b,ra.firstChild);b.addEventListener('click',p85ExitToMenu);}
+ const ib=q('.introButtons');if(ib){const b=document.createElement('button');b.type='button';b.id='p85Quit';b.textContent='EXIT';ib.appendChild(b);b.addEventListener('click',p85QuitGame);
+  const n=document.createElement('div');n.id='p85QuitNote';n.style.cssText='display:none;margin-top:10px;font-size:13px;opacity:.8';n.textContent='To leave the game, swipe it away from your recent apps (or close this browser tab).';ib.parentNode.insertBefore(n,ib.nextSibling);}
  document.getElementById('introStart')?.addEventListener('click',()=>{ensureAudio();p85Fullscreen();if(p85Prefs.controls==='tilt')p85RequestTilt();},{capture:true});
  p85SyncSettings();p85Layout();}
+// 8.5.6: Exit to menu (❚❚ and the results) ends the race and shows the start screen;
+// EXIT there closes the game where the browser allows it (an installed app opened from
+// its icon), and otherwise says how to leave.
+function p85ExitToMenu(){try{if(typeof p6SetupOpen!=='undefined'&&p6SetupOpen)p6ToggleSetup(false);}catch(e){}
+ toggleSettings(false);reset();p85In.pad=null;p85In.padSteer=0;p85In.gas=p85In.brake=0;p85PedalLook();p63SetIntro(true);}
+function p85QuitGame(){try{if(document.fullscreenElement&&document.exitFullscreen)document.exitFullscreen().catch(()=>{});}catch(e){}
+ try{window.close();}catch(e){}
+ setTimeout(()=>{const n=document.getElementById('p85QuitNote');if(n)n.style.display='block';},400);}
 function p85PedalLook(){if(!P85UI.gas)return;P85UI.gas.classList.toggle('on',p85In.gas>0);P85UI.brake.classList.toggle('on',p85In.brake>0);P85UI.brakeL.classList.toggle('on',p85In.brake>0);}
 if(p85On()){
  try{p85BuildUI();}catch(e){console.warn('8.5 mobile UI:',e);}
