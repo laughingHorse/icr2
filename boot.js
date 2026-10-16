@@ -209,7 +209,12 @@
     // a passphrase in the link (#key=...) is taken out of the address at once
     let linkKey = null;
     const m = /(?:^#|&)key=([^&]*)/.exec(location.hash || '');
-    if (m) { try { linkKey = decodeURIComponent(m[1]); } catch (_) { linkKey = m[1]; } try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {} }
+    if (m) { try { linkKey = decodeURIComponent(m[1]); } catch (_) { linkKey = m[1]; } }
+    // 8.5.7: a friend's lap link (#lap=...) is kept for the game (sessionStorage outlives the
+    // reload after unlocking or loading the data) and also taken out of the address
+    const lap = /(?:^#|&)lap=([^&]*)/.exec(location.hash || '');
+    if (lap) { try { sessionStorage.setItem('icr2_lap_link', lap[1]); } catch (_) {} }
+    if (m || lap) { try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {} }
     const input = $('packFile');
     input.addEventListener('change', async () => { const f = input.files && input.files[0]; if (!f) return; try { await importFile(f); } catch (e) { status(e.message || String(e), true); } });
     $('packCancel').onclick = () => { $('packScreen').style.display = 'none'; };

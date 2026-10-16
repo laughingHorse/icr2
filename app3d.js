@@ -2054,7 +2054,7 @@ updateTag();
 // or when the page sets window.ICR2_MOBILE (tests). ?mobile=0 turns it off.
 // A desktop with a mouse is unchanged, and none of this runs in 7.11 compat
 // mode: the core's steering hook (p85SteerInput) then returns the key value.
-const P85_BUILD='8.5.6';   // shown on the start screen and in ❚❚, so a player can tell which build is running
+const P85_BUILD='8.5.7';   // shown on the start screen and in ❚❚, so a player can tell which build is running
 const P85_STORE='icr2_phase85_mobile';
 const P85_DEFAULTS={v:5,controls:'touch',autoAccel:false,brakeAssist:false,lineAssist:'off',steerFeel:'smooth',difficulty:'normal',tiltRange:20,tiltZero:0,renderScale:'auto',haptics:true};
 let p85Prefs=(()=>{try{const st=JSON.parse(localStorage.getItem(P85_STORE)||'{}');
@@ -2496,6 +2496,242 @@ if(p7HudTitle)p7HudTitle.textContent='ICR2 MODERN · BUILD '+P85_BUILD;
 try{const k=document.querySelector('.introKicker');if(k)k.textContent='ICR2 · BUILD '+P85_BUILD+(p85On()?' · MOBILE':'');}catch(e){}
 updateTag=function(){ui.tag.innerHTML=`Build ${P85_BUILD} · ${T.short_name||T.name} · ${p712IsHS()?'High-Speed race trim':'Classic handling'}<br>${environmentOn?'environment ON':'environment OFF'} · ${atlasReady?(p81AtlasMip?'textures ready (mipmapped)':'textures ready'):'loading textures…'} · ${opponents.length+1} cars · ${soundOn?'sound ON':'sound OFF'}`;};
 updateTag();
+// =============================================================================
+// Phase 8.5.7: time trial. Your car alone on the circuit from a flying start,
+// every lap timed. Each device keeps a board per circuit and trim: your best lap
+// with its ghost (the car's path at 20 Hz), and the laps friends send you as
+// links (#lap=...). Race against any ghost on the board. Nothing here runs unless
+// TIME TRIAL is chosen on the start screen: while ttOn is false every wrapper
+// passes straight through, so races, the desktop build and the Classic lockstep
+// are unchanged.
+// =============================================================================
+const P857_STORE='icr2_time_trial',P857_RATE=20,P857_KEEP=12,P857_OUT_M=260;
+let ttOn=false,ttSaved=null,ttOverlayOpen=false,ttOverlayMode='menu';
+const tt={timing:false,valid:false,why:'',rec:[],recNext:0,sa:0,ba:false,trim:'',lapNo:0,ghost:null,delta:null,hudTick:0,best:null,link:null,linkFor:null,msg:''};
+let ttData=(()=>{try{const d=JSON.parse(localStorage.getItem(P857_STORE)||'null');if(d&&typeof d==='object'&&d.boards&&typeof d.boards==='object')return d;}catch(e){}return{name:'',ghost:'best',boards:{}};})();
+function p857Save(){for(let k=0;k<4;k++){try{localStorage.setItem(P857_STORE,JSON.stringify(ttData));return true;}catch(e){
+  // storage full: drop the ghost of the slowest friend's lap anywhere, then try again
+  let worst=null;for(const b of Object.values(ttData.boards))for(const x of b)if(x&&!x.mine&&x.g&&(!worst||x.time>worst.time))worst=x;if(!worst)return false;worst.g='';}}return false;}
+function p857Key(track,trim){return(track||T.id)+'|'+(trim||p712Trim());}
+function p857Board(key){const b=ttData.boards[key||p857Key()];return Array.isArray(b)?b.filter(x=>x&&isFinite(x.time)):[];}
+function p857Mine(key){return p857Board(key).find(x=>x.mine)||null;}
+function p857Name(){return(ttData.name||'').trim()||'You';}
+function p857AddEntry(e){const key=p857Key(e.track,e.trim);let b=p857Board(key);
+ const same=b.find(x=>e.mine?x.mine:(!x.mine&&x.name===e.name));
+ if(same){if(same.time<=e.time)return false;b=b.filter(x=>x!==same);}
+ b.push(e);b.sort((a,c)=>a.time-c.time);b=b.filter((x,i)=>i<P857_KEEP||x.mine);ttData.boards[key]=b;p857Save();return true;}
+
+// -- compact bytes: varints, base64url, UTF-8 (no browser APIs needed) ------------------
+function p857U(o,v){v=Math.max(0,Math.floor(v));while(v>=128){o.push(v%128+128);v=Math.floor(v/128);}o.push(v);}
+function p857S(o,v){p857U(o,v<0?-2*v-1:2*v);}
+function p857RU(b,p){let v=0,m=1,c;do{if(p.i>=b.length)throw new Error('data cut short');c=b[p.i++];v+=(c&127)*m;m*=128;}while(c&128&&m<2**49);return v;}
+function p857RS(b,p){const v=p857RU(b,p);return v%2?-(v+1)/2:v/2;}
+const P857_B64='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+function p857B64e(b){let s='';for(let i=0;i<b.length;i+=3){const n=(b[i]<<16)|((b[i+1]||0)<<8)|(b[i+2]||0);s+=P857_B64[n>>18&63]+P857_B64[n>>12&63]+(i+1<b.length?P857_B64[n>>6&63]:'')+(i+2<b.length?P857_B64[n&63]:'');}return s;}
+function p857B64d(s){s=String(s).replace(/[^A-Za-z0-9\-_]/g,'');const o=new Uint8Array(Math.floor(s.length*3/4));let j=0;
+ for(let i=0;i<s.length;i+=4){const v=k=>{const c=P857_B64.indexOf(s[i+k]);return c<0?0:c;},n=(v(0)<<18)|(v(1)<<12)|(i+2<s.length?v(2)<<6:0)|(i+3<s.length?v(3):0);
+  o[j++]=n>>16&255;if(i+2<s.length)o[j++]=n>>8&255;if(i+3<s.length)o[j++]=n&255;}return o.subarray(0,j);}
+function p857Utf8(s){const b=unescape(encodeURIComponent(s)),o=new Uint8Array(b.length);for(let i=0;i<b.length;i++)o[i]=b.charCodeAt(i);return o;}
+function p857FromUtf8(b){let s='';for(let i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);return decodeURIComponent(escape(s));}
+
+// -- ghost: positions every 1/20 s from the line, 5 cm / 0.001 rad steps, as second differences
+function p857EncodeGhost(s){const o=[1,P857_RATE];p857U(o,s.length);let px=0,py=0,ph=0,dx=0,dy=0,dh=0;
+ for(let i=0;i<s.length;i++){const [x,y,h]=s[i];if(i===0){p857S(o,x);p857S(o,y);p857S(o,h);}else{const nx=x-px,ny=y-py,nh=h-ph;p857S(o,nx-dx);p857S(o,ny-dy);p857S(o,nh-dh);dx=nx;dy=ny;dh=nh;}px=x;py=y;ph=h;}
+ return new Uint8Array(o);}
+function p857DecodeGhost(b){const p={i:0};if(b[p.i++]!==1)throw new Error('unknown ghost format');const rate=b[p.i++];if(rate!==P857_RATE)throw new Error('ghost rate '+rate);
+ const n=p857RU(b,p);if(n<2||n>P857_RATE*900)throw new Error('ghost length '+n);const s=new Array(n);let x=0,y=0,h=0,dx=0,dy=0,dh=0;
+ for(let i=0;i<n;i++){if(i===0){x=p857RS(b,p);y=p857RS(b,p);h=p857RS(b,p);}else{dx+=p857RS(b,p);dy+=p857RS(b,p);dh+=p857RS(b,p);x+=dx;y+=dy;h+=dh;}s[i]=[x,y,h];}return s;}
+// A ghost ready to drive: its pose at any time of the lap, and the time it reached each
+// record of the circuit (for the live gap: your lap clock minus the ghost's time there)
+function p857Ghost(e){if(!e||!e.g)return null;let s;try{s=p857DecodeGhost(p857B64d(e.g));}catch(err){return null;}
+ const n=s.length,x=new Float64Array(n),y=new Float64Array(n),h=new Float64Array(n);for(let i=0;i<n;i++){x[i]=s[i][0]/20;y[i]=s[i][1]/20;h[i]=s[i][2]/1000;}
+ const at=new Float32Array(N).fill(-1);let top=-1,lastT=0;
+ for(let i=0;i<n;i++){const t=i/P857_RATE,k=nearestIndex(x[i],y[i])[0];if(i===0){for(let q=0;q<=k;q++)at[q]=0;top=k;lastT=0;continue;}
+  if(k>top&&k-top<N/3){for(let q=top+1;q<=k;q++)at[q]=lastT+(t-lastT)*(q-top)/(k-top);top=k;lastT=t;}}
+ for(let q=top+1;q<N;q++)at[q]=e.time;
+ return{name:e.mine?p857Name():e.name,time:e.time,mine:!!e.mine,n,x,y,h,at};}
+function p857GhostPose(G,t){const f=t*P857_RATE;if(!(f>=0)||f>G.n-1)return null;const i=Math.floor(f),j=Math.min(G.n-1,i+1),a=f-i;
+ return{x:G.x[i]+(G.x[j]-G.x[i])*a,y:G.y[i]+(G.y[j]-G.y[i])*a,h:G.h[i]+(G.h[j]-G.h[i])*a};}
+function p857PickGhost(){const b=p857Board(),pick=ttData.ghost||'best';let e=null;
+ if(pick==='off')e=null;else if(pick==='best')e=b.find(x=>x.g)||null;else if(pick==='mine')e=b.find(x=>x.mine&&x.g)||null;else e=b.find(x=>!x.mine&&x.name===pick&&x.g)||b.find(x=>x.g)||null;
+ tt.ghost=p857Ghost(e);return tt.ghost;}
+
+// -- lap links: #lap=z<base64url of deflate-raw(IL v1 | json | ghost)>  ('r' when this browser cannot compress)
+async function p857Deflate(bytes){if(typeof CompressionStream!=='function')return null;try{const s=new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'));return new Uint8Array(await new Response(s).arrayBuffer());}catch(e){return null;}}
+async function p857Inflate(bytes){
+ if(typeof DecompressionStream==='function'){const r=new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw')).getReader(),parts=[];let n=0;
+  for(;;){const {done,value}=await r.read();if(done)break;n+=value.length;if(n>1<<20){try{r.cancel();}catch(e){}throw new Error('lap link too large');}parts.push(value);}
+  const o=new Uint8Array(n);let k=0;for(const q of parts){o.set(q,k);k+=q.length;}return o;}
+ if(window.fflate&&window.fflate.inflateSync)return window.fflate.inflateSync(bytes);
+ throw new Error('this browser cannot open lap links');}
+async function p857LinkPayload(e){const meta={v:1,n:String(e.mine?p857Name():e.name).slice(0,16),t:+e.time.toFixed(4),tr:e.track,tm:e.trim,c:e.ctrl,sa:e.sa|0,ba:e.ba?1:0,d:e.diff,dt:e.date|0};
+ const js=p857Utf8(JSON.stringify(meta)),g=e.g?p857B64d(e.g):new Uint8Array(0),o=[0x49,0x4c,1];p857U(o,js.length);
+ const raw=new Uint8Array(o.length+js.length+g.length);raw.set(o,0);raw.set(js,o.length);raw.set(g,o.length+js.length);
+ const z=await p857Deflate(raw);return z?'z'+p857B64e(z):'r'+p857B64e(raw);}
+function p857LinkUrl(payload,track){let base='';try{base=location.origin+location.pathname;}catch(e){}return base+'?track='+encodeURIComponent(track)+'#lap='+payload;}
+const P857_TAG=/^[a-z0-9_]{1,16}$/;
+async function p857ParseLink(payload){payload=String(payload||'');if(payload.length>200000)throw new Error('lap link too long');
+ const kind=payload[0],bytes=p857B64d(payload.slice(1)),raw=kind==='z'?await p857Inflate(bytes):kind==='r'?bytes:null;if(!raw)throw new Error('not a lap link');
+ if(raw[0]!==0x49||raw[1]!==0x4c||raw[2]!==1)throw new Error('not a lap link (or from a newer version)');
+ const p={i:3},jl=p857RU(raw,p);if(jl>4096||p.i+jl>raw.length)throw new Error('damaged lap link');
+ const m=JSON.parse(p857FromUtf8(raw.subarray(p.i,p.i+jl))),g=raw.subarray(p.i+jl);
+ const name=String(m.n||'').replace(/[\u0000-\u001f<>&"'`]/g,'').trim().slice(0,16)||'Friend',time=Number(m.t);
+ if(!(time>=8&&time<=900)||!P857_TAG.test(String(m.tr))||!['highspeed','classic'].includes(m.tm))throw new Error('damaged lap link');
+ if(g.length)p857DecodeGhost(g);   // throws if the ghost is damaged
+ return{name,time,date:Number(m.dt)||Date.now(),track:String(m.tr),trim:m.tm,ctrl:P857_TAG.test(String(m.c))?String(m.c):'',sa:Math.max(0,Math.min(2,m.sa|0)),ba:!!m.ba,diff:P857_TAG.test(String(m.d))?String(m.d):'',mine:false,g:g.length?p857B64e(g):''};}
+async function p857ImportLink(payload){const e=await p857ParseLink(payload);const added=p857AddEntry(e);return{entry:e,added};}
+
+// -- the session --------------------------------------------------------------------------
+function p857Start(){if(ttOn)return;ttSaved={raceLaps:settings.raceLaps,startMode:settings.startMode};ttOn=true;settings.raceLaps=999;settings.startMode='rolling';p857SyncChrome();}
+function p857End(){if(!ttOn)return;ttOn=false;if(ttSaved){settings.raceLaps=ttSaved.raceLaps;settings.startMode=ttSaved.startMode;}ttSaved=null;tt.timing=false;tt.ghost=null;p857SyncChrome();
+ reset();if(raceUI.banner)raceUI.banner.style.display='none';}   // the race grid again, behind the menu
+function p857Fresh(){p6Resources.fuel=Number(p6Setup.startingFuel)||32;p6Resources.tires=100;p6Resources.damage=0;try{p6UpdateResourceUI();}catch(e){}}
+// Solo, on the racing line P857_OUT_M before the line at 90% of the line's speed there: an out lap of a few seconds, then flying laps
+function p857Setup(){opponents=[];const back=Math.max(10,Math.round(P857_OUT_M/T.lp_resolution_m)),idx=(N-back)%N,v=Math.min(70,(S[idx]&&S[idx].speed_mph||60)*.44704*.9);
+ setCarAtIndex(idx,0,v);lastIdx=idx;lap=1;lapClock=0;raceStarted=true;startCountdown=0;startGoTimer=0;
+ safeState={x:car.x,y:car.y,heading:car.heading,vx:car.vx,vy:car.vy};p857Fresh();
+ tt.timing=false;tt.valid=false;tt.rec=[];tt.lapNo=0;tt.delta=null;tt.best=p857Mine();p857PickGhost();
+ try{updateStartSignal();}catch(e){}p5ShowBanner('TIME TRIAL · OUT LAP',2.2);p857UpdateHud();}
+function p857LapStart(){tt.timing=true;tt.valid=true;tt.why='';tt.lapNo++;tt.rec=[[Math.round(car.x*20),Math.round(car.y*20),Math.round(car.heading*1000)]];tt.recNext=1/P857_RATE;tt.sa=0;tt.ba=false;tt.trim=p712Trim();p857Fresh();}
+function p857LapDone(t){tt.timing=false;const prev=p857Mine(),before=prev?prev.time:Infinity;
+ if(!tt.valid){p5ShowBanner(formatTime(t)+' · NOT COUNTED ('+tt.why+')',2.6);return;}
+ const e={name:p857Name(),time:+t.toFixed(4),date:Date.now(),track:T.id,trim:tt.trim,ctrl:p85On()?p85Prefs.controls:'keys',sa:tt.sa,ba:tt.ba,diff:p85On()?p85Prefs.difficulty:'hard',mine:true,g:p857B64e(p857EncodeGhost(tt.rec))};
+ if(t<before){p857AddEntry(e);tt.best=p857Mine();tt.link=null;p5ShowBanner('NEW BEST '+formatTime(t)+(isFinite(before)?'  −'+(before-t).toFixed(3):''),3);
+  const pick=ttData.ghost||'best';if(pick==='best'||pick==='mine'||!tt.ghost)p857PickGhost();}
+ else p5ShowBanner(formatTime(t)+'  +'+(t-before).toFixed(3),2.4);}
+const P857_SA={off:0,light:1,strong:2};
+const p857BaseFixedUpdate=fixedUpdate;
+fixedUpdate=function(dt){
+ if(!ttOn)return p857BaseFixedUpdate(dt);
+ if(ttOverlayOpen)return;
+ const lap0=lap,clock0=lapClock;p857BaseFixedUpdate(dt);
+ if(lap>lap0){if(tt.timing)p857LapDone(clock0+dt);p857LapStart();}
+ else if(tt.timing&&!p6ReplayActive){
+  if(drivingStatus(car.x,car.y).pit&&tt.valid){tt.valid=false;tt.why='pit lane';}
+  if(p712Trim()!==tt.trim&&tt.valid){tt.valid=false;tt.why='trim changed';}
+  if(p85On()){tt.sa=Math.max(tt.sa,P857_SA[p85Prefs.lineAssist]||0);tt.ba=tt.ba||!!(p85Prefs.autoAccel||p85Prefs.brakeAssist);}
+  if(lapClock>=tt.recNext-1e-6&&tt.rec.length<P857_RATE*900){tt.rec.push([Math.round(car.x*20),Math.round(car.y*20),Math.round(car.heading*1000)]);tt.recNext+=1/P857_RATE;}
+  if(tt.ghost){const g=tt.ghost.at[lastIdx];tt.delta=g>=0?lapClock-g:null;}}
+ if(++tt.hudTick%6===0)p857UpdateHud();
+};
+const p857BaseReset=reset;
+reset=function(){p857BaseReset();if(ttOn)p857Setup();};
+const p857BaseRecover=recoverCar;
+recoverCar=function(manual){if(ttOn&&tt.timing&&tt.valid){tt.valid=false;tt.why=manual?'car recovered':'auto recovery';}return p857BaseRecover(manual);};
+const p857BaseSaveSettings=saveSettings;
+saveSettings=function(){if(!ttOn||!ttSaved)return p857BaseSaveSettings();const a=settings.raceLaps,b=settings.startMode;settings.raceLaps=ttSaved.raceLaps;settings.startMode=ttSaved.startMode;try{p857BaseSaveSettings();}finally{settings.raceLaps=a;settings.startMode=b;}};
+const p857BaseSetIntro=p63SetIntro;
+p63SetIntro=function(open){if(open&&ttOn)p857End();return p857BaseSetIntro(open);};
+const p857BaseUpdateHud=p85UpdateHud;
+p85UpdateHud=function(){p857BaseUpdateHud();if(!ttOn||!P85UI.hud)return;const H=P85UI.hud;H.pos.textContent='TT';H.lap.textContent=tt.timing?'LAP '+tt.lapNo:'OUT LAP';};
+
+// -- the ghost on screen: the stock car body, see-through, in a pale tint --------------------
+let p857GP=null;const p857M=new Float32Array(16);
+function p857GhostProgram(){if(p857GP)return p857GP;const S0=P84F.slots,pr=program(
+`attribute vec3 p;attribute vec3 c;attribute float s;uniform mat4 vp;uniform mat4 m;uniform vec3 pal[${S0}];varying vec3 col;void main(){col=c;if(s>=0.0)col=pal[int(s+0.5)];gl_Position=vp*(m*vec4(p,1.0));}`,
+`precision mediump float;varying vec3 col;uniform vec4 tint;void main(){gl_FragColor=vec4(mix(col,tint.rgb,.6),tint.a);}`);
+ p857GP={pr,p:gl.getAttribLocation(pr,'p'),c:gl.getAttribLocation(pr,'c'),s:gl.getAttribLocation(pr,'s'),vp:gl.getUniformLocation(pr,'vp'),m:gl.getUniformLocation(pr,'m'),pal:gl.getUniformLocation(pr,'pal'),tint:gl.getUniformLocation(pr,'tint')};return p857GP;}
+function p857DrawGhost(){const G=P84G;if(!G||!p80LastVP||!tt.ghost||!tt.timing)return;const q=p857GhostPose(tt.ghost,lapClock);if(!q)return;
+ const eye=(p84Pass&&p84Pass.eye)||[car.x,0,car.y],d=Math.hypot(eye[0]-q.x,eye[2]-q.y);if(d>1700)return;
+ const M=p84CarMatrix(q.x,q.y,q.h,p857M),mesh=p84Lod(d).ai,P=p857GhostProgram(),blend=gl.isEnabled(gl.BLEND);
+ gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
+ gl.useProgram(P.pr);gl.uniformMatrix4fv(P.vp,false,p80LastVP);gl.uniformMatrix4fv(P.m,false,M);gl.uniform3fv(P.pal,G.pal[P84F.player.livery]);gl.uniform4f(P.tint,.55,.92,1,.58);
+ gl.bindBuffer(gl.ARRAY_BUFFER,mesh.col);gl.enableVertexAttribArray(P.p);gl.vertexAttribPointer(P.p,3,gl.FLOAT,false,28,0);gl.enableVertexAttribArray(P.c);gl.vertexAttribPointer(P.c,3,gl.FLOAT,false,28,12);gl.enableVertexAttribArray(P.s);gl.vertexAttribPointer(P.s,1,gl.FLOAT,false,28,24);
+ gl.drawArrays(gl.TRIANGLES,0,mesh.nc);gl.depthMask(true);if(!blend)gl.disable(gl.BLEND);}
+const p857BaseDynamicMesh=dynamicMesh;
+dynamicMesh=function(){const r=p857BaseDynamicMesh();if(ttOn)try{p857DrawGhost();}catch(e){}return r;};
+
+// -- screens: TIME TRIAL on the start screen, the board, the HUD ---------------------------------
+const P857UI={};
+function p857El(tag,attrs,parent,html){const e=document.createElement(tag);for(const [k,v] of Object.entries(attrs||{}))e.setAttribute(k,v);if(html!=null)e.innerHTML=html;(parent||document.body).appendChild(e);return e;}
+function p857Esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);}
+function p857TrackName(id){const m=(window.ICR2_TRACK_MANIFEST||[]).find(t=>t.id===id);return id===T.id?(T.short_name||T.name):(m?m.name:id);}
+function p857TrimName(t){return t==='highspeed'?'High-Speed':'Classic';}
+function p857Tags(e){const t=[];if(e.ctrl)t.push(e.ctrl);if(e.sa)t.push(e.sa>1?'strong assist':'steer assist');if(e.ba)t.push('braking help');if(e.diff==='easy')t.push('easy');return t.join(' · ');}
+function p857UpdateHud(){const D=P857UI.delta,I=P857UI.info;if(!D)return;
+ if(!tt.timing){D.textContent='OUT LAP';D.style.color='#fff';}
+ else if(tt.ghost&&tt.delta!=null){const d=Math.round(tt.delta*100)/100;D.textContent=(d<0?'−':d>0?'+':'±')+Math.abs(d).toFixed(2);D.style.color=d<0?'#6be38a':d>0?'#ff8a7a':'#fff';}
+ else{D.textContent=formatTime(lapClock);D.style.color='#fff';}
+ const b=tt.best;I.textContent='BEST '+(b?formatTime(b.time):'—')+(tt.ghost?' · ghost '+tt.ghost.name+' '+formatTime(tt.ghost.time):'')+(tt.timing&&!tt.valid?' · NOT COUNTED':'');}
+function p857SyncChrome(){try{document.body.classList.toggle('tt',ttOn);}catch(e){}if(P857UI.hud)P857UI.hud.style.display=ttOn?'block':'none';if(P857UI.boardBtn)P857UI.boardBtn.style.display=ttOn?'':'none';
+ const pit=document.getElementById('p85Pit');if(pit)pit.style.display=ttOn?'none':'';p857UpdateHud();}
+function p857RenderBoard(){const U=P857UI;if(!U.table)return;const key=p857Key(),b=p857Board(key),first=b.length?b[0].time:0;
+ U.title.textContent=(T.short_name||T.name)+' · '+p857TrimName(p712Trim());
+ U.table.innerHTML=b.length?b.map((e,i)=>`<tr class="${e.mine?'ttMine':''}"><td>${i+1}</td><td>${p857Esc(e.mine?p857Name():e.name)}${e.g?'':' <span class="ttTag">no ghost</span>'}<div class="ttTag">${p857Esc(p857Tags(e))}</div></td><td>${formatTime(e.time)}</td><td>${i?'+'+(e.time-first).toFixed(3):''}</td><td>${e.mine?'':`<button type="button" class="ttDel" data-name="${p857Esc(e.name)}" aria-label="Remove">✕</button>`}</td></tr>`).join('')
+  :'<tr><td colspan="5" class="ttEmpty">No laps yet on this circuit and trim. Set one, or open a friend\'s lap link.</td></tr>';
+ const sel=U.ghost,pick=ttData.ghost||'best',opts=[['best','Fastest on the board'],['mine','My best']].concat(b.filter(e=>!e.mine&&e.g).map(e=>[e.name,e.name+' '+formatTime(e.time)])).concat([['off','No ghost']]);
+ sel.innerHTML=opts.map(([v,l])=>`<option value="${p857Esc(v)}">${p857Esc(l)}</option>`).join('');sel.value=opts.some(o=>o[0]===pick)?pick:'best';
+ U.name.textContent=(ttData.name||'Set your name')+' ✎';const mine=p857Mine(key);U.share.disabled=!mine;U.share.textContent=mine?'Share my best lap':'Share my best lap (none yet)';
+ U.start.textContent=ttOverlayMode==='running'?'Back to the track':'START';U.msg.innerHTML=tt.msg;
+ if(mine&&tt.linkFor!==mine){tt.linkFor=mine;tt.link=null;p857LinkPayload(mine).then(p=>{if(tt.linkFor===mine)tt.link=p857LinkUrl(p,mine.track);}).catch(()=>{});}}
+function p857OpenBoard(mode){ttOverlayMode=mode||'menu';ttOverlayOpen=true;P857UI.overlay.style.display='flex';try{keys.clear();}catch(e){}p857RenderBoard();}
+function p857CloseBoard(){ttOverlayOpen=false;P857UI.overlay.style.display='none';tt.msg='';}
+async function p857ShareBest(){const mine=p857Mine();if(!mine)return;let url=tt.link;if(!url)url=p857LinkUrl(await p857LinkPayload(mine),mine.track);
+ const text=`${p857Name()}: ${formatTime(mine.time)} at ${p857TrackName(mine.track)} (${p857TrimName(mine.trim)}). Race my ghost:`;
+ if(navigator.share){try{await navigator.share({title:'ICR2 lap',text,url});tt.msg='Shared.';p857RenderBoard();return;}catch(e){if(e&&e.name==='AbortError')return;}}
+ try{await navigator.clipboard.writeText(text+' '+url);tt.msg='Link copied. Paste it to your friends.';}
+ catch(e){tt.msg='Copy this link: <input readonly style="width:100%" value="'+p857Esc(url)+'">';}
+ p857RenderBoard();}
+function p857BuildUI(){
+ p857El('style',{},document.head,`
+#ttOverlay{position:fixed;inset:0;z-index:150;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.55);font:14px system-ui,sans-serif;color:#fff}
+#ttCard{width:min(600px,calc(100vw - 16px));max-height:calc(100dvh - 16px);overflow:auto;background:#101915;border:1px solid #3c4a44;border-radius:14px;padding:14px 18px;box-shadow:0 10px 40px rgba(0,0,0,.6)}
+#ttCard .ttKicker{font-size:11px;letter-spacing:.16em;font-weight:800;opacity:.64}#ttCard h2{margin:4px 0 10px;font-size:20px}
+#ttTable{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}#ttTable td{padding:5px 6px;border-top:1px solid #26332f;vertical-align:top}
+#ttTable td:nth-child(1){width:22px;opacity:.7}#ttTable td:nth-child(3){font-weight:800}#ttTable td:nth-child(4){opacity:.7}#ttTable td:nth-child(5){width:30px;text-align:right}
+#ttTable tr.ttMine td{background:rgba(53,92,77,.35)}.ttTag{font-size:11px;opacity:.65;font-weight:400}.ttEmpty{opacity:.7;padding:12px 6px!important}
+.ttDel{background:none;border:0;color:#fff;opacity:.55;font-size:14px;cursor:pointer;padding:2px 6px}
+#ttCard label{display:grid;grid-template-columns:110px 1fr;align-items:center;gap:8px;margin:9px 0}#ttName{justify-self:start;cursor:pointer}#ttCard input,#ttCard button#ttName,#ttCard select{min-height:32px;font-size:14px;background:#1b2622;color:#fff;border:1px solid #53615c;border-radius:6px;padding:3px 8px}
+.ttActions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.ttActions button{background:#26332f;color:#fff;border:1px solid #53615c;border-radius:8px;padding:9px 14px;font:700 14px system-ui,sans-serif;cursor:pointer}
+.ttActions button.primary{background:#a62b1e;border-color:#d95f4e}.ttActions button:disabled{opacity:.45}
+#ttMsg{margin-top:10px;font-size:13px;line-height:1.4}#ttMsg:empty{display:none}#ttMsg button{margin-top:6px}
+#ttHud{position:fixed;left:50%;top:max(8px,env(safe-area-inset-top));transform:translateX(-50%);z-index:13;display:none;text-align:center;padding:4px 14px;border-radius:10px;background:rgba(6,10,8,.62);color:#fff;font:700 12px system-ui,sans-serif;font-variant-numeric:tabular-nums;pointer-events:none;white-space:nowrap}
+#ttDelta{font-size:22px;font-weight:850;line-height:1.1}body.tt #raceBanner{top:34%}body.mobile #ttHud{top:calc(max(8px,env(safe-area-inset-top)) + 46px)}`);
+ const O=P857UI.overlay=p857El('div',{id:'ttOverlay'},null,`<div id="ttCard"><div class="ttKicker">TIME TRIAL · LAP TIMES ON THIS DEVICE</div><h2 id="ttTitle"></h2>
+<table id="ttTable"></table>
+<label>Your name <button type="button" id="ttName"></button></label>
+<label>Race against <select id="ttGhost"></select></label>
+<div class="ttActions"><button type="button" id="ttStart" class="primary">START</button><button type="button" id="ttShare">Share my best lap</button><button type="button" id="ttClose">Close</button></div>
+<div id="ttMsg"></div></div>`);
+ Object.assign(P857UI,{title:document.getElementById('ttTitle'),table:document.getElementById('ttTable'),name:document.getElementById('ttName'),ghost:document.getElementById('ttGhost'),
+  start:document.getElementById('ttStart'),share:document.getElementById('ttShare'),close:document.getElementById('ttClose'),msg:document.getElementById('ttMsg')});
+ for(const ev of ['keydown','keyup'])O.addEventListener(ev,e=>e.stopPropagation());
+ // (a prompt, not a text box: the game's keyboard shortcuts listen on the whole page)
+ P857UI.name.addEventListener('click',()=>{let v=null;try{v=prompt('Your name for lap times and lap links (up to 16 letters)',ttData.name||'');}catch(e){}if(v==null)return;
+  ttData.name=String(v).replace(/[\u0000-\u001f<>&"'`]/g,'').trim().slice(0,16);p857Save();tt.linkFor=null;p857RenderBoard();});
+ P857UI.ghost.addEventListener('change',e=>{ttData.ghost=e.target.value;p857Save();p857PickGhost();});
+ P857UI.share.addEventListener('click',()=>{p857ShareBest();});
+ P857UI.close.addEventListener('click',()=>{p857CloseBoard();});
+ P857UI.start.addEventListener('click',()=>{const running=ttOverlayMode==='running';p857CloseBoard();if(running)return;
+  try{ensureAudio();}catch(e){}if(p85On()){p85Fullscreen();if(p85Prefs.controls==='tilt')p85RequestTilt();}
+  p857Start();p857BaseSetIntro(false);reset();});
+ P857UI.table.addEventListener('click',e=>{const b=e.target.closest?e.target.closest('.ttDel'):null;if(!b)return;const key=p857Key(),name=b.getAttribute('data-name');
+  ttData.boards[key]=p857Board(key).filter(x=>x.mine||x.name!==name);if(ttData.ghost===name)ttData.ghost='best';p857Save();p857PickGhost();p857RenderBoard();});
+ const q=sel=>{try{return document.querySelector(sel);}catch(e){return null;}};
+ const ib=q('.introButtons'),startBtn=document.getElementById('introStart');
+ if(ib){const b=document.createElement('button');b.type='button';b.id='introTimeTrial';b.textContent='TIME TRIAL';ib.insertBefore(b,startBtn?startBtn.nextSibling:ib.firstChild);b.addEventListener('click',()=>p857OpenBoard('menu'));}
+ const acts=q('#settingsPanel .settingsActions');
+ if(acts){const b=P857UI.boardBtn=document.createElement('button');b.type='button';b.id='ttBoardBtn';b.textContent='Lap times';b.style.display='none';acts.insertBefore(b,acts.firstChild);
+  b.addEventListener('click',()=>{toggleSettings(false);p857OpenBoard('running');});
+  if(!document.getElementById('p85Exit')){const x=document.createElement('button');x.type='button';x.id='ttExit';x.textContent='Exit to menu';acts.insertBefore(x,acts.firstChild);
+   x.addEventListener('click',()=>{toggleSettings(false);reset();p63SetIntro(true);});}}
+ P857UI.hud=p857El('div',{id:'ttHud'},null,'<div id="ttDelta">OUT LAP</div><div id="ttInfo"></div>');P857UI.delta=document.getElementById('ttDelta');P857UI.info=document.getElementById('ttInfo');
+}
+// A lap link opened: boot.js keeps it across the unlock reload (sessionStorage); the
+// desktop build reads it from the address. Saved to the board, then shown.
+async function p857TakeLink(){let payload=null;try{payload=sessionStorage.getItem('icr2_lap_link');sessionStorage.removeItem('icr2_lap_link');}catch(e){}
+ if(!payload){const m=/(?:^#|&)lap=([^&]*)/.exec(location.hash||'');if(m){payload=m[1];try{history.replaceState(null,'',location.pathname+location.search);}catch(e){}}}
+ let reopen=false;try{reopen=sessionStorage.getItem('icr2_tt_open')==='1';sessionStorage.removeItem('icr2_tt_open');}catch(e){}
+ if(!payload){if(reopen)p857OpenBoard('menu');return;}
+ try{const {entry:e,added}=await p857ImportLink(payload);const where=p857TrackName(e.track)+' ('+p857TrimName(e.trim)+')';
+  const what=`<b>${p857Esc(e.name)}</b>: ${formatTime(e.time)} at ${p857Esc(where)}`;
+  if(e.track===T.id){if(e.trim!==p712Trim())p712SetTrim(e.trim);if(e.g){ttData.ghost=e.name;p857Save();}
+   tt.msg=(added?'Added ':'Already on your board, with a faster lap: ')+what+'. Their ghost is selected: tap START to race it.';p857OpenBoard('menu');}
+  else{tt.msg=(added?'Added ':'Already on your board: ')+what+'. <button type="button" id="ttGo">Go to '+p857Esc(p857TrackName(e.track))+'</button>';p857OpenBoard('menu');
+   const go=document.getElementById('ttGo');if(go)go.addEventListener('click',()=>{if(e.trim!==p712Trim())p712SetTrim(e.trim);if(e.g){ttData.ghost=e.name;p857Save();}
+    try{sessionStorage.setItem('icr2_tt_open','1');}catch(err){}const q=new URLSearchParams(location.search);q.set('track',e.track);location.search=q.toString();});}}
+ catch(err){tt.msg='Could not read that lap link: '+p857Esc(err.message||err);p857OpenBoard('menu');}}
+if(!p80Compat()){try{p857BuildUI();}catch(e){console.warn('8.5.7 time trial UI:',e);}if(typeof setTimeout==='function')setTimeout(()=>{p857TakeLink().catch(()=>{});},0);}
 // -----------------------------------------------------------------------------
 let last=performance.now(),acc=0;const FIXED=1/120;function frame(now){let dt=Math.min(.10,(now-last)/1000);last=now;acc+=dt;let n=0;while(acc>=FIXED&&n<12){fixedUpdate(FIXED);acc-=FIXED;n++;}render();requestAnimationFrame(frame);}requestAnimationFrame(frame);
 })();
